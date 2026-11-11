@@ -17,6 +17,8 @@ GitHub compiles every sketch on each push (see the **Actions** tab) and puts the
 - **EpaperHello**: shows "Hello!" plus the temperature and humidity from the onboard sensor, updating every 30 seconds.
 - **EpaperPet**: a digital pet named Pip. BOOT moves between FEED / PLAY / SLEEP, PWR picks one. Keep its food, fun and energy bars up; its stats are saved when unplugged. First start: join the **Pip-Setup** Wi-Fi with your phone and pick your home network. Then open http://pip.local on your phone to play. Hold BOOT 5 s to forget Wi-Fi.
 
+- **PipAI**: an autonomous pet with a real neural-network brain. Every 3 minutes it senses temperature, humidity, time, battery and your pats, and its network (trained with reinforcement learning on GitHub) picks what to do. Each Pip is born with a random personality. Watch it at http://pip.local. See `training/` and `training/personality_report.md`.
+
 ## Arduino IDE settings
 
 - Board: **ESP32S3 Dev Module** (esp32 by Espressif, 3.3.0 or newer)

@@ -1,0 +1,59 @@
+name: Train Pip brain
+
+# Trains Pip's neural network on GitHub's computers (never on your Mac),
+# checks the C version matches, and saves the trained brain into PipAI/pip_brain.h.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "training/**"
+      - "PipAI/pip_world.h"
+      - ".github/workflows/train.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: train
+  cancel-in-progress: true
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyTorch (CPU) and numpy
+        run: pip install numpy torch --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
+
+      - name: Train
+        run: python training/train.py
+
+      - name: Check the C brain + world match Python
+        run: |
+          gcc -O2 -I PipAI training/test_world.c -lm -o test_world
+          ./test_world training/out/trajectory.txt
+
+      - name: Personality report
+        run: cat training/out/report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: training-output
+          path: training/out/
+
+      - name: Save the trained brain to the repo
+        run: |
+          cp training/out/report.md training/personality_report.md
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          git add PipAI/pip_brain.h training/personality_report.md
+          git diff --cached --quiet && exit 0
+          git commit -m "Update Pip's trained brain"
+          git push

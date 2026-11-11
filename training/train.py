@@ -1,0 +1,227 @@
+"""Train Pip's brain with reinforcement learning (PPO) and export it for the ESP32.
+
+Runs on GitHub Actions. Outputs:
+  PipAI/pip_brain.h          - the trained network as C arrays + forward pass
+  training/out/trajectory.txt - a recorded run the C test replays to check C == Python
+  training/out/report.md      - how different personalities behave
+"""
+import os
+import sys
+import time
+
+import numpy as np
+import torch
+import torch.nn as nn
+
+sys.path.insert(0, os.path.dirname(__file__))
+import pip_world as W  # noqa: E402
+
+SEED = 7
+HIDDEN = 48
+ENVS = 128
+ROLLOUT = 256
+UPDATES = int(os.environ.get("PIP_UPDATES", "300"))
+GAMMA, LAM = 0.99, 0.95
+CLIP, ENT_COEF, VF_COEF, LR = 0.2, 0.01, 0.5, 3e-4
+EPOCHS, MINIBATCH = 4, 4096
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+OUT = os.path.join(ROOT, "training", "out")
+
+
+class Actor(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.l1 = nn.Linear(W.N_FEATURES, HIDDEN)
+        self.l2 = nn.Linear(HIDDEN, HIDDEN)
+        self.l3 = nn.Linear(HIDDEN, W.N_ACTIONS)
+
+    def forward(self, x):
+        return self.l3(torch.tanh(self.l2(torch.tanh(self.l1(x)))))
+
+
+def make_critic():
+    return nn.Sequential(nn.Linear(W.N_FEATURES, 64), nn.Tanh(), nn.Linear(64, 64), nn.Tanh(), nn.Linear(64, 1))
+
+
+def train():
+    torch.manual_seed(SEED)
+    rng = np.random.default_rng(SEED)
+    world = W.World(ENVS, rng)
+    actor, critic = Actor(), make_critic()
+    opt = torch.optim.Adam(list(actor.parameters()) + list(critic.parameters()), lr=LR)
+
+    start = time.time()
+    for update in range(UPDATES):
+        obs = np.zeros((ROLLOUT, ENVS, W.N_FEATURES), dtype=np.float32)
+        acts = np.zeros((ROLLOUT, ENVS), dtype=np.int64)
+        logps = np.zeros((ROLLOUT, ENVS), dtype=np.float32)
+        rews = np.zeros((ROLLOUT, ENVS), dtype=np.float32)
+        dones = np.zeros((ROLLOUT, ENVS), dtype=np.float32)
+        vals = np.zeros((ROLLOUT + 1, ENVS), dtype=np.float32)
+
+        for t in range(ROLLOUT):
+            se = world.senses()
+            W.observe(world.st, se)
+            x = W.features(world.st, se, world.traits).astype(np.float32)
+            with torch.no_grad():
+                xt = torch.from_numpy(x)
+                dist = torch.distributions.Categorical(logits=actor(xt))
+                a = dist.sample()
+                logps[t] = dist.log_prob(a).numpy()
+                vals[t] = critic(xt).squeeze(-1).numpy()
+            a = a.numpy()
+            W.act(world.st, se, world.traits, a)
+            rews[t] = W.reward(world.st, world.traits, a)
+            obs[t], acts[t] = x, a
+            dones[t] = world.advance(a)
+
+        # Bootstrap value of the next state (without consuming senses permanently is not
+        # possible, so we approximate it with the last value; fine for long episodes).
+        vals[ROLLOUT] = vals[ROLLOUT - 1]
+
+        adv = np.zeros_like(rews)
+        last = np.zeros(ENVS, dtype=np.float32)
+        for t in reversed(range(ROLLOUT)):
+            nonterm = 1.0 - dones[t]
+            delta = rews[t] + GAMMA * vals[t + 1] * nonterm - vals[t]
+            last = delta + GAMMA * LAM * nonterm * last
+            adv[t] = last
+        ret = adv + vals[:ROLLOUT]
+
+        b_obs = torch.from_numpy(obs.reshape(-1, W.N_FEATURES))
+        b_act = torch.from_numpy(acts.reshape(-1))
+        b_logp = torch.from_numpy(logps.reshape(-1))
+        b_adv = torch.from_numpy(adv.reshape(-1))
+        b_ret = torch.from_numpy(ret.reshape(-1))
+        b_adv = (b_adv - b_adv.mean()) / (b_adv.std() + 1e-8)
+
+        n = b_obs.shape[0]
+        for _ in range(EPOCHS):
+            perm = torch.randperm(n)
+            for i in range(0, n, MINIBATCH):
+                idx = perm[i:i + MINIBATCH]
+                dist = torch.distributions.Categorical(logits=actor(b_obs[idx]))
+                ratio = torch.exp(dist.log_prob(b_act[idx]) - b_logp[idx])
+                pg = -torch.min(ratio * b_adv[idx], torch.clamp(ratio, 1 - CLIP, 1 + CLIP) * b_adv[idx]).mean()
+                vl = ((critic(b_obs[idx]).squeeze(-1) - b_ret[idx]) ** 2).mean()
+                loss = pg + VF_COEF * vl - ENT_COEF * dist.entropy().mean()
+                opt.zero_grad()
+                loss.backward()
+                nn.utils.clip_grad_norm_(list(actor.parameters()) + list(critic.parameters()), 0.5)
+                opt.step()
+
+        if update % 10 == 0 or update == UPDATES - 1:
+            print(f"update {update:4d}  avg reward/step {rews.mean():+.4f}  "
+                  f"{time.time() - start:5.0f}s", flush=True)
+    return actor
+
+
+# ---------------------------------------------------------------- export
+
+def c_array(name, t):
+    flat = t.detach().numpy().astype(np.float32).ravel()
+    body = ",".join(f"{v:.7g}f" for v in flat)
+    return f"static const float {name}[{flat.size}] = {{{body}}};\n"
+
+
+def export_header(actor, path):
+    with open(path, "w") as f:
+        f.write("// Pip's trained brain. GENERATED by training/train.py - do not edit by hand.\n")
+        f.write("#pragma once\n#include <math.h>\n\n")
+        f.write(f"#define PIP_N_IN {W.N_FEATURES}\n#define PIP_N_HID {HIDDEN}\n#define PIP_N_OUT {W.N_ACTIONS}\n\n")
+        for name, layer in [("1", actor.l1), ("2", actor.l2), ("3", actor.l3)]:
+            f.write(c_array(f"PIP_W{name}", layer.weight))  # [out][in]
+            f.write(c_array(f"PIP_B{name}", layer.bias))
+        f.write("""
+static void pip_dense(const float *w, const float *b, const float *in, int nIn, int nOut,
+                      float *out, int useTanh) {
+  for (int o = 0; o < nOut; o++) {
+    float s = b[o];
+    for (int i = 0; i < nIn; i++) s += w[o * nIn + i] * in[i];
+    out[o] = useTanh ? tanhf(s) : s;
+  }
+}
+
+// Run the brain: 34 senses/feelings in, 10 action scores (logits) out.
+static void pip_brain(const float *in, float *logits) {
+  float h1[PIP_N_HID], h2[PIP_N_HID];
+  pip_dense(PIP_W1, PIP_B1, in, PIP_N_IN, PIP_N_HID, h1, 1);
+  pip_dense(PIP_W2, PIP_B2, h1, PIP_N_HID, PIP_N_HID, h2, 1);
+  pip_dense(PIP_W3, PIP_B3, h2, PIP_N_HID, PIP_N_OUT, logits, 0);
+}
+""")
+
+
+def record_trajectory(actor, path, steps=300):
+    """A single Pip's run, so the C code can replay it and prove it matches."""
+    rng = np.random.default_rng(123)
+    world = W.World(1, rng, episode_steps=10 ** 9)
+    world.has_orient[:] = 1
+    world.orient[:] = 1
+    with open(path, "w") as f:
+        tr = world.traits[0]
+        f.write(" ".join(f"{v:.9g}" for v in tr) + "\n")
+        s = world.st
+        f.write(" ".join(f"{getattr(s, n)[0]:.9g}" for n in W.NEEDS) + "\n")
+        f.write(f"{steps}\n")
+        for _ in range(steps):
+            se = world.senses()
+            W.observe(world.st, se)
+            x = W.features(world.st, se, world.traits).astype(np.float32)
+            with torch.no_grad():
+                logits = actor(torch.from_numpy(x))[0].numpy()
+            a = np.array([int(np.argmax(logits))])
+            W.act(world.st, se, world.traits, a)
+            world.advance(a)
+            senses = [se["temp"][0], se["humidity"][0], se["hour"][0], se["sound"][0], se["battery"][0],
+                      se["charging"][0], int(se["touched"][0]), se["orient"][0]]
+            after = [getattr(world.st, n)[0] for n in W.NEEDS]
+            f.write(" ".join(f"{v:.9g}" for v in senses) + f" {a[0]} "
+                    + " ".join(f"{v:.9g}" for v in after) + " "
+                    + " ".join(f"{v:.9g}" for v in logits) + "\n")
+
+
+def personality_report(actor, path):
+    """Show that different personalities really behave differently."""
+    people = {
+        "Curious explorer": [0.95, 0.4, 0.2, 0.7, 0.4],
+        "Playful goofball": [0.4, 0.95, 0.2, 0.6, 0.5],
+        "Lazy napper": [0.2, 0.3, 0.95, 0.5, 0.4],
+        "Shy scaredy-cat": [0.4, 0.4, 0.5, 0.05, 0.5],
+        "Cuddly sweetheart": [0.3, 0.5, 0.4, 0.5, 0.95],
+    }
+    lines = ["# How Pip's personality changes its behaviour\n",
+             "Each row is one personality living 3 simulated days in the same kinds of rooms. "
+             "Numbers are the % of time spent on each action.\n",
+             "| Personality | " + " | ".join(W.ACTIONS) + " |",
+             "|---|" + "---|" * W.N_ACTIONS]
+    for name, traits in people.items():
+        rng = np.random.default_rng(99)
+        world = W.World(64, rng, episode_steps=10 ** 9)
+        world.traits[:] = traits
+        counts = np.zeros(W.N_ACTIONS)
+        for _ in range(1440):
+            se = world.senses()
+            W.observe(world.st, se)
+            x = W.features(world.st, se, world.traits).astype(np.float32)
+            with torch.no_grad():
+                a = torch.distributions.Categorical(logits=actor(torch.from_numpy(x))).sample().numpy()
+            W.act(world.st, se, world.traits, a)
+            world.advance(a)
+            counts += np.bincount(a, minlength=W.N_ACTIONS)
+        pct = 100 * counts / counts.sum()
+        lines.append(f"| {name} | " + " | ".join(f"{p:.0f}" for p in pct) + " |")
+    text = "\n".join(lines) + "\n"
+    with open(path, "w") as f:
+        f.write(text)
+    print(text)
+
+
+if __name__ == "__main__":
+    os.makedirs(OUT, exist_ok=True)
+    actor = train()
+    export_header(actor, os.path.join(ROOT, "PipAI", "pip_brain.h"))
+    record_trajectory(actor, os.path.join(OUT, "trajectory.txt"))
+    personality_report(actor, os.path.join(OUT, "report.md"))
+    torch.save(actor.state_dict(), os.path.join(OUT, "actor.pt"))

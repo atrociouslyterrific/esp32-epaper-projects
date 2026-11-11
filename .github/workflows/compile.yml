@@ -4,26 +4,48 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+  workflow_run:  # rebuild after a new brain is trained
+    workflows: ["Train Pip brain"]
+    types: [completed]
 
 permissions:
   contents: write  # lets the build publish the "latest" download
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   FQBN: esp32:esp32:esp32s3:CDCOnBoot=cdc
 
 jobs:
   build:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        sketch: [EpaperHello, EpaperPet]
+        sketch: [EpaperHello, EpaperPet, PipAI]
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && 'main' || '' }}
+
+      - name: Check the sketch is ready
+        id: ready
+        run: |
+          if [ "${{ matrix.sketch }}" = "PipAI" ] && [ ! -f PipAI/pip_brain.h ]; then
+            echo "PipAI's brain hasn't been trained yet - skipping until training finishes."
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - uses: arduino/setup-arduino-cli@v2
+        if: steps.ready.outputs.go == 'true'
 
       - name: Install ESP32 core and libraries
+        if: steps.ready.outputs.go == 'true'
         run: |
           arduino-cli config init
           arduino-cli config add board_manager.additional_urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
@@ -32,12 +54,15 @@ jobs:
           arduino-cli lib install GxEPD2
 
       - name: Compile
+        if: steps.ready.outputs.go == 'true'
         run: arduino-cli compile --fqbn "$FQBN" --output-dir build ${{ matrix.sketch }}
 
       - name: Name the program file
+        if: steps.ready.outputs.go == 'true'
         run: cp build/${{ matrix.sketch }}.ino.merged.bin ${{ matrix.sketch }}.bin
 
       - uses: actions/upload-artifact@v4
+        if: steps.ready.outputs.go == 'true'
         with:
           name: ${{ matrix.sketch }}
           path: ${{ matrix.sketch }}.bin
@@ -45,7 +70,7 @@ jobs:
   publish:
     # Put the newest program files on the "latest" release page for easy download.
     needs: build
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.event_name == 'workflow_run')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -59,4 +84,4 @@ jobs:
           gh release view latest >/dev/null 2>&1 || \
             gh release create latest --title "Latest program files" \
               --notes "Flash with https://espressif.github.io/esptool-js/ at address 0x0."
-          gh release upload latest EpaperHello.bin EpaperPet.bin --clobber
+          gh release upload latest *.bin --clobber
