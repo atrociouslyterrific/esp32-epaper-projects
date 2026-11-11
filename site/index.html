@@ -503,28 +503,48 @@ buildGallery();
 document.fonts?.ready.then(() => { buildGallery(); cyclePreview(); });
 cyclePreview();
 
-async function poll() {
-  clearTimeout(nextTimer);
-  let wait = 90;
+// Training progress comes from GitHub's raw file server (no hourly limit).
+// The runs list and download link use GitHub's API, which allows only ~60 calls
+// an hour per network, so those are checked every 3 minutes at most.
+let apiNextAt = 0, apiBlockedUntil = 0, apiNote = "";
+const isBusy = () => ["starting", "training", "testing", "trained"].includes(status?.state) || runs.some(r => r.status !== "completed");
+
+async function fetchStatus() {
+  const r = await fetch(`https://raw.githubusercontent.com/${REPO}/status/status.json?t=${Date.now()}`, { cache: "no-store" });
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  return r.json();
+}
+
+async function fetchApi() {
+  if (Date.now() < apiNextAt || Date.now() < apiBlockedUntil) return;
+  apiNextAt = Date.now() + 180000;
   try {
-    const [st, rs, rel] = await Promise.all([
-      gh("/contents/status.json?ref=status", true).catch(e => { if (e.message === "rate") throw e; return status; }),
-      gh("/actions/runs?per_page=10"),
-      gh("/releases/tags/latest").catch(e => { if (e.message === "rate") throw e; return release; }),
-    ]);
-    status = st; runs = rs?.workflow_runs || []; release = rel;
-    render();
-    const busy = ["starting", "training", "testing", "trained"].includes(status?.state) || runs.some(r => r.status !== "completed");
-    wait = busy ? 20 : 90;
-    $("foot").textContent = `Checked ${new Date().toLocaleTimeString()} · next check in ${wait}s`;
+    const rs = await gh("/actions/runs?per_page=10");
+    runs = rs?.workflow_runs || [];
+    const rel = await gh("/releases/tags/latest");
+    release = rel;
+    apiNote = "";
   } catch (e) {
     if (e.message === "rate") {
-      wait = Math.max(30, Math.ceil(((e.reset || Date.now() + 600000) - Date.now()) / 1000));
-      $("foot").innerHTML = `<span class="err">GitHub only allows about 60 checks an hour from one network. Trying again in ${Math.ceil(wait / 60)} min.</span>`;
-    } else {
-      $("foot").innerHTML = `<span class="err">Couldn't reach GitHub (${e.message}). Retrying in 60 s.</span>`;
-      wait = 60;
-    }
+      apiBlockedUntil = e.reset || Date.now() + 600000;
+      apiNote = `GitHub's run list is paused until ${new Date(apiBlockedUntil).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} (it allows about 60 checks an hour per network). Training progress keeps updating.`;
+    } else apiNote = `Couldn't load the run list (${e.message}).`;
+  }
+}
+
+async function poll() {
+  clearTimeout(nextTimer);
+  let wait = 60, statusErr = "";
+  try { status = await fetchStatus(); } catch (e) { statusErr = `Couldn't load training progress (${e.message}).`; }
+  await fetchApi();
+  render();
+  wait = isBusy() ? 15 : 60;
+  const parts = [`Checked ${new Date().toLocaleTimeString()} · next check in ${wait}s`];
+  const foot = $("foot");
+  foot.textContent = parts.join("");
+  for (const msg of [statusErr, apiNote].filter(Boolean)) {
+    const s = document.createElement("span"); s.className = "err"; s.textContent = " · " + msg; foot.append(s);
   }
   nextTimer = setTimeout(poll, wait * 1000);
 }
