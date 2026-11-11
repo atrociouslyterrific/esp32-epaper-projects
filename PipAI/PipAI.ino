@@ -10,6 +10,8 @@
 // On screen Pip lives in a little room: it walks to its bed to nap, to its bowl
 // to eat, into its box to hide, wanders when exploring and jumps when it plays.
 //
+// Every few minutes Pip says something in a speech bubble.
+//
 // Buttons: tap BOOT or PWR to pet Pip (it hops). Hold BOOT 5 s to forget Wi-Fi.
 // Phone: join "Pip-Setup" Wi-Fi the first time, then open http://pip.local
 //
@@ -518,6 +520,7 @@ void drawScreen() {
     display.drawLine(0, 12, 199, 12, GxEPD_BLACK);
     drawRoom();
     drawPip(action, sad);
+    drawSpeech();
     printCentered(label, 111, 2);
     printCentered(line1, 129, 1);
     drawBar(141, "FOOD", pip.food);
@@ -651,6 +654,98 @@ void animTick() {
   nextFrameAt = millis();  // next frame as soon as the screen is ready (about 3 per second)
 }
 
+// ================================================================ talking
+// Every few minutes Pip says something that fits the moment: how it feels, the
+// time of day, the temperature, whether you just petted it, and its personality.
+
+char speech[40] = "";
+unsigned long speechUntil = 0, nextSpeechAt = 30000;
+
+static const char *L_SLEEP[]   = {"zzz... berries...", "mmm... five more mins", "*snore*", "zzz... boing..."};
+static const char *L_HUNGRY[]  = {"Is it snack o'clock?", "My tummy says hi", "Food? Food!"};
+static const char *L_TIRED[]   = {"So... sleepy...", "Yawwwn", "Need a nap"};
+static const char *L_LONELY[]  = {"Where did you go?", "I miss you!", "Anyone there?"};
+static const char *L_BORED[]   = {"I'm sooo bored", "Play with me?", "Nothing to do..."};
+static const char *L_COLD[]    = {"Brr! Chilly!", "Is the heater on?", "Cold toes!"};
+static const char *L_HOT[]     = {"It's toasty in here", "Phew, so hot!", "I'm melting!"};
+static const char *L_NIGHT[]   = {"The moon is pretty", "Shh, it's late", "Night night"};
+static const char *L_MORNING[] = {"Good morning!", "Rise and wiggle!", "New day!"};
+static const char *L_PETTED[]  = {"Hehe, that tickles!", "I like you!", "More pats!", "Again! Again!"};
+static const char *L_CURIOUS[] = {"What's in the box?", "Ooh, what's that?", "I wonder..."};
+static const char *L_PLAYFUL[] = {"Bet I jump higher!", "Boing boing!", "Catch me!"};
+static const char *L_LAZY[]    = {"Naps are life", "Too comfy to move", "Five more minutes"};
+static const char *L_BRAVE[]   = {"I fear nothing!", "Adventure time!"};
+static const char *L_SHY[]     = {"...hi", "Don't look at me", "*hides a bit*"};
+static const char *L_CUDDLY[]  = {"You're my favourite!", "Hug?", "Love you lots!"};
+static const char *L_HAPPY[]   = {"Blub!", "I'm a happy blob", "Wiggle wiggle", "What a nice day"};
+#define LINES(a) a, (int)(sizeof(a) / sizeof(a[0]))
+
+struct LineSet { const char **lines; int n; };
+
+void sayFrom(const char **lines, int n, unsigned long ms) {
+  snprintf(speech, sizeof(speech), "%s", lines[esp_random() % n]);
+  speechUntil = millis() + ms;
+  needRedraw = true;
+  Serial.printf("Pip says: \"%s\"\n", speech);
+}
+
+void speakSomething() {
+  LineSet pick[12];
+  int n = 0;
+  bool night = clockSet && (senses.hour >= 22 || senses.hour < 6);
+  bool morning = clockSet && senses.hour >= 6 && senses.hour < 10;
+  if (action == A_NAP) { sayFrom(LINES(L_SLEEP), 20000); return; }
+  // Things Pip is feeling right now come first...
+  if (pip.food < 0.3f) pick[n++] = {LINES(L_HUNGRY)};
+  if (pip.energy < 0.3f) pick[n++] = {LINES(L_TIRED)};
+  if (pip.social < 0.3f) pick[n++] = {LINES(L_LONELY)};
+  if (pip.fun < 0.3f) pick[n++] = {LINES(L_BORED)};
+  if (haveSensor && senses.tempC < 18) pick[n++] = {LINES(L_COLD)};
+  if (haveSensor && senses.tempC > 27) pick[n++] = {LINES(L_HOT)};
+  if (night) pick[n++] = {LINES(L_NIGHT)};
+  if (morning) pick[n++] = {LINES(L_MORNING)};
+  // ...otherwise its personality talks (or just happy blob noises)
+  if (n == 0 || esp_random() % 3 == 0) {
+    if (traits.curious > 0.6f) pick[n++] = {LINES(L_CURIOUS)};
+    if (traits.playful > 0.6f) pick[n++] = {LINES(L_PLAYFUL)};
+    if (traits.lazy > 0.6f) pick[n++] = {LINES(L_LAZY)};
+    if (traits.brave > 0.7f) pick[n++] = {LINES(L_BRAVE)};
+    if (traits.brave < 0.3f) pick[n++] = {LINES(L_SHY)};
+    if (traits.affectionate > 0.6f) pick[n++] = {LINES(L_CUDDLY)};
+    pick[n++] = {LINES(L_HAPPY)};
+  }
+  LineSet s = pick[esp_random() % n];
+  sayFrom(s.lines, s.n, 20000);
+}
+
+void sayPetted() { sayFrom(LINES(L_PETTED), 8000); }
+
+// Run from loop(): start talking now and then, and stop when the bubble's time is up.
+void speechTick() {
+  if (speech[0] && millis() > speechUntil) { speech[0] = 0; needRedraw = true; }
+  if (millis() < nextSpeechAt || animMode != AN_REST || speech[0]) return;
+  speakSomething();
+  nextSpeechAt = millis() + 120000UL + esp_random() % 240000UL;  // every 2-6 minutes
+}
+
+// A speech bubble above Pip with a little tail pointing at it.
+void drawSpeech() {
+  if (!speech[0]) return;
+  bool onBed = pipX < 52 && (action == A_NAP || action == A_WARM_UP) && animMode != AN_WALK;
+  int ry = BLOB_RY * 100 / squash;
+  int top = (onBed ? 97 : FLOOR_Y) + pipJump - 2 * ry - 5;
+  int w = strlen(speech) * 6 + 10, h = 13;
+  int x = constrain(pipX - w / 2, 1, 199 - w);
+  int y = max(14, top - h - 7);
+  int tx = constrain(pipX, x + 6, x + w - 6);
+  display.fillRoundRect(x, y, w, h, 4, GxEPD_WHITE);
+  display.drawRoundRect(x, y, w, h, 4, GxEPD_BLACK);
+  display.fillTriangle(tx - 3, y + h - 1, tx + 3, y + h - 1, tx, y + h + 5, GxEPD_WHITE);
+  display.drawLine(tx - 3, y + h - 1, tx, y + h + 5, GxEPD_BLACK);
+  display.drawLine(tx + 3, y + h - 1, tx, y + h + 5, GxEPD_BLACK);
+  printAt(speech, x + 5, y + 3, 1);
+}
+
 // ================================================================ phone page
 
 const char PAGE_HTML[] PROGMEM = R"rawliteral(<!doctype html>
@@ -739,6 +834,7 @@ void sendState() {
   j += "\"thoughts\":" + String(thoughts) + ",";
   j += "\"action\":\"" + String(PIP_ACTION_NAMES[action]) + "\",";
   j += "\"reason\":\"" + jsonEscape(reason) + "\",";
+  j += "\"said\":\"" + jsonEscape(speech) + "\",";
   j += "\"confidence\":" + String(actionProbs[action], 3) + ",";
   j += "\"food\":" + String(pip.food, 3) + ",\"energy\":" + String(pip.energy, 3) + ",";
   j += "\"fun\":" + String(pip.fun, 3) + ",\"comfort\":" + String(pip.comfort, 3) + ",";
@@ -763,6 +859,7 @@ void handlePet() {
   touchedPending = true;  // Pip feels it on its next thought
   snprintf(reason, sizeof(reason), "Ooh, pats! <3");
   startHop();
+  sayPetted();
   needRedraw = true;
   sendState();
 }
@@ -908,6 +1005,7 @@ void checkButtons() {
     touchedPending = true;
     snprintf(reason, sizeof(reason), "Ooh, pats! <3");
     startHop();
+    sayPetted();
     needRedraw = true;
   }
 }
@@ -952,6 +1050,7 @@ void loop() {
     think();
   }
   animTick();
+  speechTick();
   if (needRedraw) {
     needRedraw = false;
     drawScreen();

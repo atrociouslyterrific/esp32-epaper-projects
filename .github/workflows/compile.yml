@@ -13,8 +13,7 @@ permissions:
   contents: write  # lets the build publish the "latest" download
 
 concurrency:
-  group: build-${{ github.ref }}
-  cancel-in-progress: true
+  group: build-${{ github.run_id }}
 
 env:
   FQBN: esp32:esp32:esp32s3:CDCOnBoot=cdc
