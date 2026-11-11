@@ -12,7 +12,7 @@
 //
 // Every few minutes Pip says something in a speech bubble.
 //
-// Buttons: tap BOOT or PWR to pet Pip (it hops). Hold BOOT 5 s to forget Wi-Fi.
+// Buttons: tap BOOT to drop a snack, tap PWR to pet Pip (it hops). Hold BOOT 5 s to forget Wi-Fi.
 // Phone: join "Pip-Setup" Wi-Fi the first time, then open http://pip.local
 //
 // Files: pip_world.h = Pip's world rules, pip_brain.h = the trained network
@@ -30,6 +30,23 @@
 #include "pip_world.h"
 #include "pip_brain.h"
 #include "pip_voice.h"   // Pip's generative voice (trained by training/train_voice.py)
+#include "pip_github_roots.h"
+#include <WiFiClientSecure.h>
+#include <HTTPClient.h>
+#include <HTTPUpdate.h>
+#include <SD_MMC.h>
+#if __has_include("pip_version.h")
+#include "pip_version.h"     // written by the GitHub build: this program's version number
+#endif
+#ifndef PIP_FW_VERSION
+#define PIP_FW_VERSION 0
+#endif
+#ifndef PIP_BRAIN_VERSION
+#define PIP_BRAIN_VERSION 0
+#endif
+#ifndef PV_VOICE_VERSION
+#define PV_VOICE_VERSION 0
+#endif
 
 // ---- Board pins (from Waveshare's example code) ----
 const int EPD_PWR = 6, EPD_BUSY = 8, EPD_RST = 9, EPD_DC = 10, EPD_CS = 11, EPD_SCK = 12, EPD_MOSI = 13;
@@ -67,6 +84,12 @@ bool haveSensor = false, haveRtc = false, clockSet = false;
 
 struct Key { int8_t y; uint8_t sq; };
 struct LineSet { const char **lines; int n; };  // a list of fallback phrases  // animation keyframe: height above floor, squash %
+
+// Declared here, defined further down (used before their sections)
+extern float lastReward;
+extern char speech[40];
+extern unsigned long speechUntil;
+extern bool eatingSnack;
 
 #define LOG_LEN 8
 struct LogEntry { int action; int hour, minute; };
@@ -220,11 +243,15 @@ void think() {
   pip_observe(&pip, &senses);
   float x[PIP_N_FEATURES], logits[PIP_N_ACTIONS];
   pip_features(&pip, &senses, &traits, x);
-  pip_brain(x, logits);
+  brainForward(x, logits);  // the trained brain plus whatever Pip has learned on the board
   action = sampleAction(logits);
   explain(action);
+  float night = (clockSet && (senses.hour >= 22 || senses.hour < 7)) ? 1.0f : 0.0f;
   pip_act(&pip, &senses, &traits, action);
+  lastReward = pip_reward(&pip, &traits, action, night);
+  learnFrom(action, lastReward);  // nudge the brain toward choices that turned out well
   thoughts++;
+  diaryWrite(action, lastReward);
 
   int hr = (int)senses.hour, mn = (int)((senses.hour - hr) * 60);
   memmove(&actionLog[1], &actionLog[0], sizeof(LogEntry) * (LOG_LEN - 1));
@@ -237,6 +264,175 @@ void think() {
                 pip.social, PIP_ACTION_NAMES[action], actionProbs[action] * 100, reason);
   startAction(action);
   needRedraw = true;
+}
+
+// ================================================================ learning on the board
+// Pip keeps learning from its own life. After each decision it scores how things went
+// (the same reward it was trained with) and nudges the brain's last layer: choices that
+// went better than usual become a bit more likely, worse ones a bit less (REINFORCE).
+// What it learns is saved, and is reset when a new brain version arrives from GitHub.
+
+float liveW3[PIP_N_OUT * PIP_N_HID], liveB3[PIP_N_OUT];
+float lastH2[PIP_N_HID];
+float rewardBaseline = 0, recentReward = 0, lastReward = 0;
+bool baselineSet = false;
+unsigned long learnSteps = 0;
+const float LEARN_RATE = 0.002f;   // small steps: Pip changes slowly, over days
+const float MAX_DRIFT = 1.0f;      // never drift further than this from the trained brain
+Preferences learnPrefs;
+
+void brainForward(const float *x, float *logits) {
+  float h1[PIP_N_HID];
+  pip_dense(PIP_W1, PIP_B1, x, PIP_N_IN, PIP_N_HID, h1, 1);
+  pip_dense(PIP_W2, PIP_B2, h1, PIP_N_HID, PIP_N_HID, lastH2, 1);
+  pip_dense(liveW3, liveB3, lastH2, PIP_N_HID, PIP_N_OUT, logits, 0);
+}
+
+void saveLearning() {
+  learnPrefs.putUInt("ver", PIP_BRAIN_VERSION);
+  learnPrefs.putBytes("w3", liveW3, sizeof(liveW3));
+  learnPrefs.putBytes("b3", liveB3, sizeof(liveB3));
+  learnPrefs.putFloat("base", rewardBaseline);
+  learnPrefs.putFloat("recent", recentReward);
+  learnPrefs.putULong("steps", learnSteps);
+}
+
+void loadLearning() {
+  memcpy(liveW3, PIP_W3, sizeof(liveW3));
+  memcpy(liveB3, PIP_B3, sizeof(liveB3));
+  learnPrefs.begin("learn", false);
+  if (learnPrefs.getUInt("ver", 0xFFFFFFFF) == (uint32_t)PIP_BRAIN_VERSION &&
+      learnPrefs.getBytesLength("w3") == sizeof(liveW3) && learnPrefs.getBytesLength("b3") == sizeof(liveB3)) {
+    learnPrefs.getBytes("w3", liveW3, sizeof(liveW3));
+    learnPrefs.getBytes("b3", liveB3, sizeof(liveB3));
+    rewardBaseline = learnPrefs.getFloat("base", 0);
+    recentReward = learnPrefs.getFloat("recent", 0);
+    learnSteps = learnPrefs.getULong("steps", 0);
+    baselineSet = learnSteps > 0;
+    Serial.printf("Loaded %lu steps of on-board learning\n", learnSteps);
+  } else {
+    Serial.println("New brain version: on-board learning starts fresh");
+  }
+}
+
+void learnFrom(int a, float r) {
+  if (!baselineSet) { rewardBaseline = recentReward = r; baselineSet = true; }
+  float adv = constrain(r - rewardBaseline, -1.0f, 1.0f);   // better or worse than usual?
+  rewardBaseline += 0.02f * (r - rewardBaseline);
+  recentReward += 0.05f * (r - recentReward);
+  for (int i = 0; i < PIP_N_OUT; i++) {
+    float g = LEARN_RATE * adv * (((i == a) ? 1.0f : 0.0f) - actionProbs[i]);
+    for (int k = 0; k < PIP_N_HID; k++) {
+      int j = i * PIP_N_HID + k;
+      liveW3[j] = constrain(liveW3[j] + g * lastH2[k], PIP_W3[j] - MAX_DRIFT, PIP_W3[j] + MAX_DRIFT);
+    }
+    liveB3[i] = constrain(liveB3[i] + g, PIP_B3[i] - MAX_DRIFT, PIP_B3[i] + MAX_DRIFT);
+  }
+  learnSteps++;
+  if (learnSteps % 10 == 0) saveLearning();
+}
+
+// How far on-board learning has moved the brain (0 = not at all).
+float learnedDrift() {
+  float d = 0;
+  for (int j = 0; j < PIP_N_OUT * PIP_N_HID; j++) d += fabsf(liveW3[j] - PIP_W3[j]);
+  return d / (PIP_N_OUT * PIP_N_HID);
+}
+
+// ================================================================ diary on the microSD card
+// Every decision goes into /pip/diary.csv and everything Pip says into /pip/sayings.txt.
+// Download them from the phone page, or read the card on a computer.
+bool sdOk = false;
+
+void startSD() {
+  SD_MMC.setPins(39, 41, 40);                    // CLK, CMD, D0 (1-bit mode, from Waveshare's example)
+  sdOk = SD_MMC.begin("/sdcard", true);
+  if (!sdOk) { Serial.println("No microSD card (diary off)"); return; }
+  SD_MMC.mkdir("/pip");
+  if (!SD_MMC.exists("/pip/diary.csv")) {
+    File f = SD_MMC.open("/pip/diary.csv", FILE_WRITE);
+    if (f) { f.println("thought,time,temp_c,humidity,battery,petted,food,energy,fun,comfort,love,action,chance,reward,brain_version"); f.close(); }
+  }
+  Serial.printf("microSD card: %llu MB, diary on\n", SD_MMC.cardSize() / (1024 * 1024));
+}
+
+void diaryWrite(int a, float r) {
+  if (!sdOk) return;
+  File f = SD_MMC.open("/pip/diary.csv", FILE_APPEND);
+  if (!f) return;
+  int hr = (int)senses.hour, mn = (int)((senses.hour - hr) * 60);
+  f.printf("%lu,%s%02d:%02d,%.1f,%.0f,%.2f,%d,%.3f,%.3f,%.3f,%.3f,%.3f,%s,%.2f,%.3f,%d\n", thoughts,
+           clockSet ? "" : "~", hr, mn, senses.tempC, senses.humidity, senses.battery, senses.touched,
+           pip.food, pip.energy, pip.fun, pip.comfort, pip.social, PIP_ACTION_NAMES[a], actionProbs[a], r,
+           PIP_BRAIN_VERSION);
+  f.close();
+}
+
+void diarySaid(const char *text) {
+  if (!sdOk) return;
+  File f = SD_MMC.open("/pip/sayings.txt", FILE_APPEND);
+  if (!f) return;
+  int hr = (int)senses.hour, mn = (int)((senses.hour - hr) * 60);
+  f.printf("%s%02d:%02d  %s\n", clockSet ? "" : "~", hr, mn, text);
+  f.close();
+}
+
+// ================================================================ updating itself over Wi-Fi
+// Once a day Pip asks GitHub for the newest version number. If it's newer than this
+// program, it downloads the update over HTTPS (checked against GitHub's real
+// certificates, see pip_github_roots.h), installs it into the spare slot and restarts.
+const char *UPDATE_BASE = "https://github.com/atrociouslyterrific/esp32-epaper-projects/releases/download/latest/";
+unsigned long nextUpdateCheck = 3UL * 60 * 1000;   // first check 3 minutes after starting
+String updateStatus = "not checked yet";
+int latestVersion = -1;
+
+int fetchLatestVersion() {
+  WiFiClientSecure client;
+  client.setCACert(GITHUB_ROOT_CAS);
+  HTTPClient http;
+  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  http.setTimeout(15000);
+  if (!http.begin(client, String(UPDATE_BASE) + "PipAI.version")) return -1;
+  int code = http.GET();
+  int v = -1;
+  if (code == 200) v = http.getString().toInt();
+  else Serial.printf("Update check: HTTP %d\n", code);
+  http.end();
+  return v > 0 ? v : -1;
+}
+
+void checkForUpdate() {
+  if (WiFi.status() != WL_CONNECTED || setupMode) { updateStatus = "waiting for Wi-Fi"; return; }
+  latestVersion = fetchLatestVersion();
+  if (latestVersion < 0) { updateStatus = "couldn't reach GitHub"; return; }
+  if (latestVersion <= PIP_FW_VERSION) { updateStatus = "up to date"; return; }
+
+  Serial.printf("Updating from version %d to %d\n", PIP_FW_VERSION, latestVersion);
+  snprintf(reason, sizeof(reason), "Updating myself to v%d...", latestVersion);
+  snprintf(speech, sizeof(speech), "Brb, getting smarter!");
+  speechUntil = millis() + 600000UL;
+  saveState();
+  saveLearning();
+  drawScreen();
+
+  WiFiClientSecure client;
+  client.setCACert(GITHUB_ROOT_CAS);
+  httpUpdate.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  httpUpdate.rebootOnUpdate(true);  // restarts into the new version when it's done
+  t_httpUpdate_return ret = httpUpdate.update(client, String(UPDATE_BASE) + "PipAI-ota.bin");
+  if (ret == HTTP_UPDATE_FAILED) {
+    updateStatus = "update failed: " + httpUpdate.getLastErrorString();
+    Serial.println(updateStatus);
+    snprintf(reason, sizeof(reason), "Update failed, retry tomorrow");
+    speech[0] = 0;
+    needRedraw = true;
+  }
+}
+
+void updateTick() {
+  if (millis() < nextUpdateCheck) return;
+  nextUpdateCheck = millis() + 24UL * 60 * 60 * 1000;  // then once a day
+  checkForUpdate();
 }
 
 // ================================================================ saving
@@ -495,6 +691,46 @@ void drawPip(int a, bool sad) {
   if (a == A_HIDE && !walk && abs(pipX - BOX_X) < 6) drawBoxFront(cx, cy);
 }
 
+// ---- snacks: tap BOOT and a berry drops into the room; Pip scoots over and eats it
+int snackX = -1, snackDropY = 0;
+bool eatingSnack = false;
+unsigned long snackCount = 0;
+
+void drawSnack() {
+  if (snackX < 0) return;
+  int y = FLOOR_Y - 5 - snackDropY;
+  display.fillCircle(snackX, y, 4, GxEPD_BLACK);              // a berry
+  display.drawPixel(snackX - 1, y - 2, GxEPD_WHITE);           // shine
+  display.drawLine(snackX, y - 4, snackX + 2, y - 8, GxEPD_BLACK);  // stem
+  display.fillTriangle(snackX + 2, y - 8, snackX + 6, y - 9, snackX + 4, y - 6, GxEPD_BLACK);  // leaf
+}
+
+void dropSnack() {
+  if (snackX >= 0) return;  // one snack at a time
+  do { snackX = randomX(16, 184); } while (abs(snackX - pipX) < 20);
+  snackDropY = 0;
+  eatingSnack = true;
+  touchedPending = true;  // being fed counts as attention from you
+  action = A_EAT;
+  snprintf(reason, sizeof(reason), "A snack! For me?!");
+  exploreHops = 0;
+  targetX = constrain(snackX + (snackX > pipX ? -14 : 14), 16, 184);
+  animMode = AN_WALK;
+  nextFrameAt = millis();
+  needRedraw = true;
+}
+
+void finishSnack() {
+  eatingSnack = false;
+  snackX = -1;
+  snackCount++;
+  pip.food = pip_clamp01(pip.food + 0.2f);
+  pip.fun = pip_clamp01(pip.fun + 0.03f);
+  saveState();
+  snprintf(reason, sizeof(reason), "Yum! Thank you!");
+  speak(pip.food > 0.85f ? 'J' : 'H', 8000);
+}
+
 void drawScreen() {
   redrawCount++;
   bool full = redrawCount == 1 || (fullRefreshDue && animMode == AN_REST);
@@ -523,6 +759,7 @@ void drawScreen() {
     printAt(right, 198 - (int)strlen(right) * 6, 2, 1);
     display.drawLine(0, 12, 199, 12, GxEPD_BLACK);
     drawRoom();
+    drawSnack();
     drawPip(action, sad);
     drawSpeech();
     printCentered(label, 111, 2);
@@ -559,12 +796,13 @@ void beginPerform() {
   if (action == A_PLAY) setKeys(K_PLAY, sizeof(K_PLAY) / sizeof(Key));
   else if (action == A_CALL) setKeys(K_CALL, sizeof(K_CALL) / sizeof(Key));
   else if (action == A_SING) setKeys(K_SING, sizeof(K_SING) / sizeof(Key));
-  else if (action == A_EAT) { facing = 1; setKeys(K_EAT, sizeof(K_EAT) / sizeof(Key)); }
+  else if (action == A_EAT) { facing = (snackX >= 0) ? (snackX > pipX ? 1 : -1) : 1; setKeys(K_EAT, sizeof(K_EAT) / sizeof(Key)); }
   else if (action == A_WARM_UP) setKeys(K_SHIVER, sizeof(K_SHIVER) / sizeof(Key));
 }
 
 // Called by think(): walk to where this action happens, then do it.
 void startAction(int a) {
+  if (eatingSnack) return;  // finish the snack first; the brain decides again next time
   exploreHops = (a == A_EXPLORE) ? 2 : 0;
   targetX = targetFor(a);
   if (abs(targetX - pipX) > 4) animMode = AN_WALK;
@@ -620,6 +858,7 @@ bool animFrame() {
       return true;
     }
     bool settle = squash != 100 || pipJump != 0 || performStep == 0;
+    if (eatingSnack) finishSnack();
     restNow();
     return settle;
   }
@@ -720,6 +959,7 @@ void speak(char mood, unsigned long ms) {
     text[0] -= 32;  // capital first letter
   }
   snprintf(speech, sizeof(speech), "%s", text);
+  diarySaid(speech);
   speechUntil = millis() + ms;
   needRedraw = true;
   Serial.printf("Pip says (%c%s): \"%s\"\n", mood, ok ? "" : ", fallback", speech);
@@ -794,6 +1034,8 @@ h1{margin:0;font-size:26px}.sub{color:#666;margin-bottom:12px}
 .bar{flex:1;height:12px;border:2px solid #222;border-radius:6px;overflow:hidden}.fill{height:100%;background:#222}
 .t .fill{background:#8a6d3b}h2{font-size:16px;margin:0 0 8px}
 button{width:100%;font-size:20px;padding:14px;border:2px solid #222;border-radius:12px;background:#fff}
+.btns{display:grid;grid-template-columns:1fr 1fr;gap:10px}button.small{font-size:16px;padding:10px}
+#brain{line-height:1.6}#files a{color:#222;margin-right:14px}
 ul{margin:0;padding-left:18px}small{color:#666}
 </style></head><body>
 <h1 id="name">Pip</h1><div class="sub" id="pers"></div>
@@ -803,7 +1045,10 @@ ul{margin:0;padding-left:18px}small{color:#666}
 <div class="card"><h2>Senses</h2><div id="senses"></div></div>
 <div class="card t"><h2>Personality</h2><div id="traits"></div></div>
 <div class="card"><h2>Recently</h2><ul id="log"></ul></div>
-<button onclick="pet()">Pet Pip</button>
+<div class="btns"><button onclick="pet()">Pet Pip</button><button onclick="snack()">Give a snack</button></div>
+<div class="card"><h2>Pip's brain</h2><div id="brain"></div>
+<p><button class="small" onclick="upd()">Check for updates</button></p>
+<p id="files"></p></div>
 <script>
 const $=id=>document.getElementById(id);
 function bars(el,obj){el.innerHTML=Object.entries(obj).map(([k,v])=>`<div class="row"><span>${k}</span><div class="bar"><div class="fill" style="width:${Math.round(v*100)}%"></div></div></div>`).join('')}
@@ -816,9 +1061,16 @@ function show(s){
  $('senses').innerHTML=`${s.temp.toFixed(1)}°C · ${Math.round(s.humidity)}% humidity<br>`+
   `time ${s.clock} · battery ${s.charging?'plugged in':Math.round(s.battery*100)+'%'}`;
  $('log').innerHTML=s.log.map(e=>`<li>${e}</li>`).join('');
+ $('brain').innerHTML=`Program version <b>${s.fw}</b> · brain v${s.brainVer} · voice v${s.voiceVer}<br>`+
+  `Learned on the board: <b>${s.learnSteps}</b> decisions (moved ${(s.drift*100).toFixed(1)}% from the trained brain)<br>`+
+  `Recent happiness score: ${s.recentReward.toFixed(2)} · snacks eaten: ${s.snacks}<br>`+
+  `Updates: ${s.updateStatus}${s.latest>0?` (newest on GitHub: v${s.latest})`:''}`;
+ $('files').innerHTML=s.sd?'<a href="/diary">Download diary (CSV)</a><a href="/sayings">Everything Pip said</a>':'No microSD card: the diary is off.';
 }
 function load(){fetch('/state').then(r=>r.json()).then(show).catch(()=>{})}
 function pet(){fetch('/pet').then(r=>r.json()).then(show)}
+function snack(){fetch('/snack').then(r=>r.json()).then(show)}
+function upd(){$('brain').insertAdjacentText('beforeend',' · checking…');fetch('/update').then(r=>r.json()).then(show)}
 // Give Pip the time from this phone (it has a clock chip but no internet time)
 const d=new Date();
 fetch(`/time?y=${d.getFullYear()}&mo=${d.getMonth()+1}&d=${d.getDate()}&wd=${d.getDay()}&h=${d.getHours()}&mi=${d.getMinutes()}&s=${d.getSeconds()}`).finally(load);
@@ -880,6 +1132,11 @@ void sendState() {
   j += "\"temp\":" + String(senses.tempC, 2) + ",\"humidity\":" + String(senses.humidity, 1) + ",";
   j += "\"clock\":\"" + String(clock) + "\",";
   j += "\"battery\":" + String(senses.battery, 2) + ",\"charging\":" + String(senses.charging ? "true" : "false") + ",";
+  j += "\"fw\":" + String(PIP_FW_VERSION) + ",\"brainVer\":" + String(PIP_BRAIN_VERSION) + ",\"voiceVer\":" + String(PV_VOICE_VERSION) + ",";
+  j += "\"learnSteps\":" + String(learnSteps) + ",\"drift\":" + String(learnedDrift(), 4) + ",";
+  j += "\"recentReward\":" + String(recentReward, 3) + ",\"snacks\":" + String(snackCount) + ",";
+  j += "\"updateStatus\":\"" + jsonEscape(updateStatus.c_str()) + "\",\"latest\":" + String(latestVersion) + ",";
+  j += "\"sd\":" + String(sdOk ? "true" : "false") + ",";
   j += "\"log\":[";
   for (int i = 0; i < logCount; i++) {
     char e[48];
@@ -888,6 +1145,13 @@ void sendState() {
   }
   j += "]}";
   server.send(200, "application/json", j);
+}
+
+void sendSdFile(const char *path, const char *type) {
+  if (!sdOk || !SD_MMC.exists(path)) { server.send(404, "text/plain", "Nothing on the microSD card yet."); return; }
+  File f = SD_MMC.open(path, FILE_READ);
+  server.streamFile(f, type);
+  f.close();
 }
 
 void handlePet() {
@@ -982,6 +1246,10 @@ void startWifi() {
   server.on("/state", sendState);
   server.on("/pet", handlePet);
   server.on("/time", handleTime);
+  server.on("/snack", []() { dropSnack(); sendState(); });
+  server.on("/update", []() { checkForUpdate(); sendState(); });
+  server.on("/diary", []() { sendSdFile("/pip/diary.csv", "text/csv"); });
+  server.on("/sayings", []() { sendSdFile("/pip/sayings.txt", "text/plain"); });
   server.on("/save", HTTP_POST, handleSave);
   server.onNotFound(handleNotFound);
   server.begin();
@@ -1004,6 +1272,7 @@ void checkWifi() {
       WiFi.mode(WIFI_STA);
       setupMode = false;
     }
+    configTime(0, 0, "pool.ntp.org", "time.google.com");  // correct time for HTTPS certificate checks
     MDNS.begin(WEB_NAME);
     MDNS.addService("http", "tcp", 80);
     Serial.printf("Wi-Fi connected: http://%s.local or http://%s\n", WEB_NAME, WiFi.localIP().toString().c_str());
@@ -1031,8 +1300,8 @@ void checkButtons() {
 
   if (boot && !bootWasDown) { bootDownAt = millis(); bootHoldUsed = false; }
   if (boot && !bootHoldUsed && millis() - bootDownAt > 5000) { bootHoldUsed = true; forgetWifi(); }
-  if (!boot && bootWasDown && !bootHoldUsed) petted = true;
-  if (pwr && !pwrWasDown) petted = true;
+  if (!boot && bootWasDown && !bootHoldUsed) dropSnack();  // tap BOOT: drop a snack
+  if (pwr && !pwrWasDown) petted = true;                   // tap PWR: pet Pip
   bootWasDown = boot;
   pwrWasDown = pwr;
 
@@ -1060,6 +1329,8 @@ void setup() {
   Wire.begin(I2C_SDA, I2C_SCL);
   prefs.begin("pipai", false);
   loadOrBirth();
+  loadLearning();
+  startSD();
   Serial.printf("Personality: curious %.2f playful %.2f lazy %.2f brave %.2f affectionate %.2f (%s)\n",
                 traits.curious, traits.playful, traits.lazy, traits.brave, traits.affectionate,
                 personalityWords().c_str());
@@ -1086,6 +1357,7 @@ void loop() {
   }
   animTick();
   speechTick();
+  updateTick();
   if (needRedraw) {
     needRedraw = false;
     drawScreen();

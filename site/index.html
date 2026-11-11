@@ -181,7 +181,7 @@ h3 { font: 600 14px var(--f-body); margin: 16px 0 8px; }
       <div class="device">
         <div class="bezel"><canvas id="epd" width="200" height="200" role="img" aria-label="Preview of Pip on the e-paper screen"></canvas></div>
         <div class="buttons">
-          <button type="button" class="hwbtn" id="btn-boot" aria-label="Press BOOT to pet Pip">BOOT</button>
+          <button type="button" class="hwbtn" id="btn-boot" aria-label="Press BOOT to drop a snack">BOOT</button>
           <button type="button" class="hwbtn" id="btn-pwr" aria-label="Press PWR to pet Pip">PWR</button>
         </div>
       </div>
@@ -189,7 +189,7 @@ h3 { font: 600 14px var(--f-body); margin: 16px 0 8px; }
         <div class="act-big" id="pv-act">–</div>
         <p id="pv-why" class="muted">Pip acts out what the brain picks, as often as the brain picks it.</p>
         <div class="gallery" id="gallery" aria-label="Every action Pip can take"></div>
-        <p class="note">Pip is a squishy blob: it scoots to its bed to nap, its bowl to eat and its box to hide, and stretches and squashes as it jumps. The board does the same moves at e-paper speed (about 3 frames a second); here they're tweened smoothly. Click a small screen to make Pip do that action, or press BOOT or PWR to pet Pip, like on the real board.</p>
+        <p class="note">Pip is a squishy blob: it scoots to its bed to nap, its bowl to eat and its box to hide, and stretches and squashes as it jumps. The board does the same moves at e-paper speed (about 3 frames a second); here they're tweened smoothly. Click a small screen to make Pip do that action, or press BOOT to drop a snack and PWR to pet Pip, like on the real board.</p>
       </div>
     </div>
   </section>
@@ -476,6 +476,11 @@ function epaper(ctx, st) {
   rrect(BOWL_X - 10, 99, 20, 7, 3); fillC(BOWL_X - 5, 98, 2); fillC(BOWL_X + 1, 97, 2); fillC(BOWL_X + 6, 98, 2);
   rect(BOX_X - 15, 84, 30, 22); line(BOX_X - 15, 84, BOX_X - 21, 77); line(BOX_X + 14, 84, BOX_X + 19, 77);
 
+  if (st.snack != null) {  // a berry, like drawSnack() on the board
+    const sx = st.snack, sy = FLOOR_Y - 5;
+    fillC(sx, sy, 4); px(sx - 1, sy - 2, PAPER); line(sx, sy - 4, sx + 2, sy - 8);
+    c.beginPath(); c.moveTo(sx + 2, sy - 8); c.lineTo(sx + 6, sy - 9); c.lineTo(sx + 4, sy - 6); c.fill();
+  }
   // Pip the blob (same geometry as drawPip() in PipAI.ino)
   const sq = st.sq || 100, rx = BLOB_RX * sq / 100, ry = BLOB_RY * 100 / sq;
   const onBed = st.x < 52 && (a === "nap" || a === "warm_up") && !walk;
@@ -565,6 +570,7 @@ function pickAction() {
   return ACTIONS[m.length - 1];
 }
 function startAction(a) {
+  if (pv.eating) return;  // finish the snack first
   pv.reason = "";
   pv.action = a; pv.hops = a === "explore" ? 2 : 0; pv.target = targetFor(a, pv.x);
   if (Math.abs(pv.target - pv.x) > 4) { pv.mode = "walk"; pv.phase = 0; } else beginPerform();
@@ -577,7 +583,16 @@ function startAction(a) {
 function beginPerform(keyName) {
   pv.mode = "perform"; pv.kt = 0;
   pv.keys = KEYS[keyName || pv.action] || [[0, 118], [0, 100]];
-  if (pv.action === "eat") pv.facing = 1;
+  if (pv.action === "eat") pv.facing = pv.snack != null ? (pv.snack > pv.x ? 1 : -1) : 1;
+}
+function dropSnack() {
+  if (pv.snack != null) return;  // one snack at a time
+  do { pv.snack = randX(16, 184); } while (Math.abs(pv.snack - pv.x) < 20);
+  pv.eating = true; pv.action = "eat"; pv.hops = 0; pv.reason = "A snack! For me?!";
+  pv.target = Math.max(16, Math.min(184, pv.snack + (pv.snack > pv.x ? -14 : 14)));
+  pv.mode = "walk"; pv.phase = 0;
+  $("pv-act").textContent = "snack!";
+  $("pv-why").textContent = "You pressed BOOT, so a berry dropped into the room. Pip scoots over and eats it, which fills its food bar and counts as attention from you.";
 }
 const ease = t => t < .5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2;
 function step(dt, now) {
@@ -595,7 +610,11 @@ function step(dt, now) {
   } else if (pv.mode === "perform") {
     pv.kt += dt / KEY_SEC;
     const k = pv.keys, i = Math.floor(pv.kt);
-    if (i >= k.length - 1) { pv.jump = 0; pv.sq = 100; pv.mode = "rest"; pv.restUntil = now + 2200; return; }
+    if (i >= k.length - 1) {
+      pv.jump = 0; pv.sq = 100; pv.mode = "rest"; pv.restUntil = now + 2200;
+      if (pv.eating) { pv.eating = false; pv.snack = null; pv.reason = "Yum! Thank you!"; sayLike("H", 4000); }
+      return;
+    }
     const t = ease(pv.kt - i);
     const [ya, sa] = k[i], [yb, sb] = k[i + 1];
     pv.jump = ya + (yb - ya) * t; pv.sq = sa + (sb - sa) * t;
@@ -776,12 +795,13 @@ function renderWeights() {
 function petPip(btn) {
   btn.classList.add("pressed"); setTimeout(() => btn.classList.remove("pressed"), 140);
   pv.reason = "Ooh, pats! <3";
-  beginPerform("hop");
+  if (!pv.eating) beginPerform("hop");
   sayLike("P", 4000);
   $("pv-why").textContent = "You pressed " + btn.textContent.trim() + ". On the real board that counts as a pat: Pip hops, and its love bar goes up on its next thought.";
   clearTimeout(petPip._t); petPip._t = setTimeout(() => { pv.reason = ""; }, 4000);
 }
-["btn-boot", "btn-pwr"].forEach(id => $(id).addEventListener("click", e => petPip(e.currentTarget)));
+$("btn-boot").addEventListener("click", e => { const b = e.currentTarget; b.classList.add("pressed"); setTimeout(() => b.classList.remove("pressed"), 140); dropSnack(); });
+$("btn-pwr").addEventListener("click", e => petPip(e.currentTarget));
 
 // ------------------------------------------------------------ personality shapes
 function renderRadars() {

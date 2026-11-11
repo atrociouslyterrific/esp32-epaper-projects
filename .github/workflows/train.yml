@@ -2,7 +2,11 @@ name: Train Pip brain
 
 # Trains Pip's neural network and its voice model on GitHub's computers (never on your Mac),
 # checks the C version matches, and saves the trained brain into PipAI/pip_brain.h.
+# Every night it picks up from the last saved version (the "checkpoints" release) and keeps
+# training; a new version only replaces the old one if it tests at least as well.
 on:
+  schedule:
+    - cron: "0 9 * * *"   # 09:00 UTC = 3 AM in the user's time zone (UTC-6)
   push:
     branches: [main]
     paths:
@@ -10,6 +14,11 @@ on:
       - "PipAI/pip_world.h"
       - ".github/workflows/train.yml"
   workflow_dispatch:
+    inputs:
+      fresh:
+        description: "Start from scratch instead of continuing from the last version"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -34,6 +43,15 @@ jobs:
 
       - name: Install PyTorch (CPU) and numpy
         run: pip install numpy torch --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
+
+      - name: Get the last saved brain and voice (if any)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p training/ckpt
+          if [ "${{ github.event.inputs.fresh }}" = "true" ]; then echo "Starting fresh as requested"; exit 0; fi
+          gh release download checkpoints -R "${{ github.repository }}" -D training/ckpt -p 'brain.pt' -p 'voice.pt' \
+            && ls -la training/ckpt || echo "No checkpoints yet - training from scratch"
 
       - name: Train (live progress goes to the status website)
         env:
@@ -100,6 +118,15 @@ jobs:
             training/out/
             PipAI/pip_brain.h
             PipAI/pip_voice.h
+
+      - name: Save checkpoints for tomorrow's training
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view checkpoints -R "${{ github.repository }}" >/dev/null 2>&1 || \
+            gh release create checkpoints -R "${{ github.repository }}" --prerelease --title "Training checkpoints" \
+              --notes "Saved brain and voice models so nightly training continues where it left off. Not for flashing."
+          gh release upload checkpoints -R "${{ github.repository }}" training/out/ckpt/brain.pt training/out/ckpt/voice.pt --clobber
 
       - name: Save the trained brain to the repo
         run: |

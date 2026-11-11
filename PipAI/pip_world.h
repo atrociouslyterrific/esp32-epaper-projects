@@ -143,3 +143,31 @@ static void pip_act(PipState *s, const PipSenses *se, const PipTraits *t, int a)
   s->prevSound = se->sound;
   s->prevOrient = se->orient;
 }
+
+// How good life feels after an action (same as reward() in pip_world.py).
+// Pip's brain uses this on the board to keep learning from its own life.
+// night = 1 if it was night when the action happened (22:00-07:00).
+static float pip_reward(const PipState *s, const PipTraits *t, int a, float night) {
+  float w_food = 1.0f;
+  float w_energy = 0.8f + 0.6f * t->lazy;
+  float w_fun = 0.6f + 0.6f * t->playful;
+  float w_comfort = 1.0f - 0.3f * t->brave;
+  float w_social = 0.3f + 0.9f * t->affectionate;
+  float r = -(w_food * (1 - s->food) * (1 - s->food) + w_energy * (1 - s->energy) * (1 - s->energy) +
+              w_fun * (1 - s->fun) * (1 - s->fun) + w_comfort * (1 - s->comfort) * (1 - s->comfort) +
+              w_social * (1 - s->social) * (1 - s->social));
+  const float like = 0.3f;
+  if (a == A_EXPLORE) r += like * (t->curious - 0.5f);
+  if (a == A_PLAY) r += like * (t->playful - 0.5f);
+  if (a == A_NAP) r += like * (t->lazy - 0.5f);
+  if (a == A_EXPLORE || a == A_PLAY) r -= like * 0.5f * (t->lazy - 0.5f);
+  if (a == A_SING || a == A_CALL) r += like * (t->affectionate - 0.5f);
+  if (a == A_HIDE) r += like * (0.5f - t->brave);
+  if (a == A_EXPLORE || a == A_PLAY || a == A_SING || a == A_CALL) r += 0.04f;
+  float day = 1.0f - night;
+  if (a == A_NAP && s->energy > 0.6f) r -= 0.04f * day;
+  if (a == A_EAT && s->food > 0.7f) r -= 0.03f;
+  if (s->repeat > 4 && a != A_NAP) r -= 0.02f;
+  if (s->repeat > 12 && a == A_NAP) r -= 0.02f;
+  return r;
+}

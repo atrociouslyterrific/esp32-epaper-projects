@@ -16,8 +16,9 @@ concurrency:
   group: build-${{ github.run_id }}
 
 env:
-  # huge_app = 3 MB for the program (PipAI's brain + voice model need the room)
-  FQBN: esp32:esp32:esp32s3:CDCOnBoot=cdc,PartitionScheme=huge_app
+  # min_spiffs = two 1.9 MB program slots, so Pip can download an update into the
+  # spare slot over Wi-Fi and switch to it (PipAI is about 1.3 MB)
+  FQBN: esp32:esp32:esp32s3:CDCOnBoot=cdc,PartitionScheme=min_spiffs
 
 jobs:
   build:
@@ -55,19 +56,34 @@ jobs:
           arduino-cli core install esp32:esp32
           arduino-cli lib install GxEPD2
 
+      - name: Stamp the version number (Pip compares it to decide whether to update)
+        if: steps.ready.outputs.go == 'true' && matrix.sketch == 'PipAI'
+        run: |
+          echo "#define PIP_FW_VERSION ${{ github.run_number }}" > PipAI/pip_version.h
+          echo "PipAI version ${{ github.run_number }}"
+
       - name: Compile
         if: steps.ready.outputs.go == 'true'
         run: arduino-cli compile --fqbn "$FQBN" --output-dir build ${{ matrix.sketch }}
 
-      - name: Name the program file
+      - name: Name the program files
         if: steps.ready.outputs.go == 'true'
-        run: cp build/${{ matrix.sketch }}.ino.merged.bin ${{ matrix.sketch }}.bin
+        run: |
+          cp build/${{ matrix.sketch }}.ino.merged.bin ${{ matrix.sketch }}.bin    # whole flash, for esptool-js at 0x0
+          if [ "${{ matrix.sketch }}" = "PipAI" ]; then
+            cp build/PipAI.ino.bin PipAI-ota.bin                             # just the program, for Wi-Fi updates
+            echo "${{ github.run_number }}" > PipAI.version
+            ls -l PipAI-ota.bin
+          fi
 
       - uses: actions/upload-artifact@v4
         if: steps.ready.outputs.go == 'true'
         with:
           name: ${{ matrix.sketch }}
-          path: ${{ matrix.sketch }}.bin
+          path: |
+            ${{ matrix.sketch }}.bin
+            PipAI-ota.bin
+            PipAI.version
 
   publish:
     # Put the newest program files on the "latest" release page for easy download.
@@ -87,4 +103,7 @@ jobs:
           gh release view latest >/dev/null 2>&1 || \
             gh release create latest --title "Latest program files" \
               --notes "Flash with https://espressif.github.io/esptool-js/ at address 0x0."
+          # Upload the program first and the version number last, so Pip never sees a new
+          # version number before the matching program is there to download.
           gh release upload latest *.bin --clobber
+          if [ -f PipAI.version ]; then gh release upload latest PipAI.version --clobber; fi

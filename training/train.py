@@ -21,13 +21,16 @@ SEED = 7
 HIDDEN = 48
 ENVS = 128
 ROLLOUT = 256
-UPDATES = int(os.environ.get("PIP_UPDATES", "1000"))
+UPDATES = int(os.environ.get("PIP_UPDATES", "1000"))            # training from scratch
+CONTINUE_UPDATES = int(os.environ.get("PIP_CONTINUE_UPDATES", "300"))  # nightly top-up from the last version
+CONTINUE_LR = 1.5e-4
 GAMMA, LAM = 0.99, 0.95
 CLIP, ENT_COEF, VF_COEF, LR = 0.2, 0.005, 0.5, 3e-4
 EPOCHS, MINIBATCH = 4, 4096
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, "training", "out")
+CKPT_IN = os.path.join(ROOT, "training", "ckpt", "brain.pt")  # downloaded by the workflow, if any
 STATUS_PATH = os.path.join(OUT, "status.json")
 STATUS = {"state": "starting", "update": 0, "total_updates": UPDATES, "elapsed_s": 0,
           "reward_history": [], "action_mix": [], "personalities": None,
@@ -60,15 +63,44 @@ def make_critic():
     return nn.Sequential(nn.Linear(W.N_FEATURES, 64), nn.Tanh(), nn.Linear(64, 64), nn.Tanh(), nn.Linear(64, 1))
 
 
-def train():
-    torch.manual_seed(SEED)
-    rng = np.random.default_rng(SEED)
+def load_checkpoint():
+    """The last saved brain, if the workflow downloaded one and it still fits."""
+    if not os.path.exists(CKPT_IN):
+        return None
+    try:
+        ck = torch.load(CKPT_IN, map_location="cpu")
+        a, c = Actor(), make_critic()
+        a.load_state_dict(ck["actor"])
+        c.load_state_dict(ck["critic"])
+        return ck
+    except Exception as e:  # e.g. the network shape changed: start fresh
+        print("checkpoint not usable, training from scratch:", e, flush=True)
+        return None
+
+
+def train(ck=None):
+    seed = SEED + (ck["gen"] if ck else 0)  # each night sees new random worlds
+    torch.manual_seed(seed)
+    rng = np.random.default_rng(seed)
     world = W.World(ENVS, rng)
     actor, critic = Actor(), make_critic()
     opt = torch.optim.Adam(list(actor.parameters()) + list(critic.parameters()), lr=LR)
+    updates = UPDATES
+    if ck:
+        actor.load_state_dict(ck["actor"])
+        critic.load_state_dict(ck["critic"])
+        try:
+            opt.load_state_dict(ck["opt"])
+        except Exception:
+            pass
+        for g in opt.param_groups:
+            g["lr"] = CONTINUE_LR
+        updates = CONTINUE_UPDATES
+        print(f"continuing from brain version {ck['gen']} for {updates} updates", flush=True)
+    STATUS["total_updates"] = updates
 
     start = time.time()
-    for update in range(UPDATES):
+    for update in range(updates):
         obs = np.zeros((ROLLOUT, ENVS, W.N_FEATURES), dtype=np.float32)
         acts = np.zeros((ROLLOUT, ENVS), dtype=np.int64)
         logps = np.zeros((ROLLOUT, ENVS), dtype=np.float32)
@@ -129,7 +161,7 @@ def train():
 
         mix = np.bincount(acts.ravel(), minlength=W.N_ACTIONS) / acts.size
         STATUS["reward_history"].append(round(float(rews.mean()), 5))
-        if update % 10 == 0 or update == UPDATES - 1:  # weights for the status website, every 10 updates
+        if update % 10 == 0 or update == updates - 1:  # weights for the status website, every 10 updates
             r3 = lambda t: [[round(float(v), 3) for v in row] for row in t.detach().numpy()]
             STATUS["weights"] = {"update": update + 1,
                                  "W1": r3(actor.l1.weight), "b1": [round(float(v), 3) for v in actor.l1.bias.detach()],
@@ -137,10 +169,29 @@ def train():
                                  "W3": r3(actor.l3.weight), "b3": [round(float(v), 3) for v in actor.l3.bias.detach()]}
         write_status(state="training", update=update + 1, elapsed_s=round(time.time() - start),
                      action_mix=[round(float(m), 4) for m in mix])
-        if update % 10 == 0 or update == UPDATES - 1:
+        if update % 10 == 0 or update == updates - 1:
             print(f"update {update:4d}  avg reward/step {rews.mean():+.4f}  "
                   f"{time.time() - start:5.0f}s", flush=True)
-    return actor
+    return actor, critic, opt
+
+
+def evaluate(actor, steps=720, envs=96):
+    """Average reward over the same fixed set of worlds (higher = happier Pip). Used to make sure
+    a new brain is at least as good as the old one before replacing it."""
+    rng = np.random.default_rng(4242)
+    world = W.World(envs, rng, episode_steps=10 ** 9)
+    g = torch.Generator().manual_seed(4242)
+    total = 0.0
+    with torch.no_grad():
+        for _ in range(steps):
+            se = world.senses()
+            W.observe(world.st, se)
+            x = torch.from_numpy(W.features(world.st, se, world.traits).astype(np.float32))
+            a = torch.multinomial(torch.softmax(actor(x), -1), 1, generator=g).squeeze(1).numpy()
+            W.act(world.st, se, world.traits, a)
+            total += float(W.reward(world.st, world.traits, a).mean())
+            world.advance(a)
+    return total / steps
 
 
 # ---------------------------------------------------------------- export
@@ -151,9 +202,13 @@ def c_array(name, t):
     return f"static const float {name}[{flat.size}] = {{{body}}};\n"
 
 
+BRAIN_GEN = 1
+
+
 def export_header(actor, path):
     with open(path, "w") as f:
         f.write("// Pip's trained brain. GENERATED by training/train.py - do not edit by hand.\n")
+        f.write(f"#define PIP_BRAIN_VERSION {BRAIN_GEN}\n")
         f.write("#pragma once\n#include <math.h>\n\n")
         f.write(f"#define PIP_N_IN {W.N_FEATURES}\n#define PIP_N_HID {HIDDEN}\n#define PIP_N_OUT {W.N_ACTIONS}\n\n")
         for name, layer in [("1", actor.l1), ("2", actor.l2), ("3", actor.l3)]:
@@ -199,13 +254,14 @@ def record_trajectory(actor, path, steps=300):
                 logits = actor(torch.from_numpy(x))[0].numpy()
             a = np.array([int(np.argmax(logits))])
             W.act(world.st, se, world.traits, a)
+            rew = float(W.reward(world.st, world.traits, a)[0])
             world.advance(a)
             senses = [se["temp"][0], se["humidity"][0], se["hour"][0], se["sound"][0], se["battery"][0],
                       se["charging"][0], int(se["touched"][0]), se["orient"][0]]
             after = [getattr(world.st, n)[0] for n in W.NEEDS]
             f.write(" ".join(f"{v:.9g}" for v in senses) + f" {a[0]} "
                     + " ".join(f"{v:.9g}" for v in after) + " "
-                    + " ".join(f"{v:.9g}" for v in logits) + "\n")
+                    + " ".join(f"{v:.9g}" for v in logits) + f" {rew:.9g}\n")
 
 
 def personality_report(actor, path):
@@ -250,8 +306,28 @@ def personality_report(actor, path):
 if __name__ == "__main__":
     os.makedirs(OUT, exist_ok=True)
     write_status(state="training")
-    actor = train()
-    write_status(state="testing")
+    ck = load_checkpoint()
+    actor, critic, opt = train(ck)
+    gen = (ck["gen"] + 1) if ck else 1
+    # Keep the new brain only if it's at least as good as the old one (same test worlds, current rules)
+    new_score = evaluate(actor)
+    kept = "new"
+    if ck:
+        old = Actor()
+        old.load_state_dict(ck["actor"])
+        old_score = evaluate(old)
+        print(f"test score: old brain {old_score:.4f}, new brain {new_score:.4f}", flush=True)
+        if new_score < old_score - 0.002:
+            kept = "old"
+            actor.load_state_dict(ck["actor"])
+            critic.load_state_dict(ck["critic"])
+            gen, new_score = ck["gen"], old_score
+        write_status(old_score=round(old_score, 4))
+    BRAIN_GEN = gen
+    write_status(state="testing", brain_version=gen, kept=kept, score=round(new_score, 4))
+    os.makedirs(os.path.join(OUT, "ckpt"), exist_ok=True)
+    torch.save({"actor": actor.state_dict(), "critic": critic.state_dict(), "opt": opt.state_dict(),
+                "gen": gen, "score": new_score}, os.path.join(OUT, "ckpt", "brain.pt"))
     export_header(actor, os.path.join(ROOT, "PipAI", "pip_brain.h"))
     record_trajectory(actor, os.path.join(OUT, "trajectory.txt"))
     personality_report(actor, os.path.join(OUT, "report.md"))

@@ -1,2 +1,4 @@
 training/out/
 __pycache__/
+training/ckpt/
+PipAI/pip_version.h

@@ -19,7 +19,7 @@ int main(int argc, char **argv) {
   PipState s;
   pip_init(&s, n0[0], n0[1], n0[2], n0[3], n0[4]);
 
-  float worstNeed = 0, worstLogit = 0;
+  float worstNeed = 0, worstLogit = 0, worstReward = 0;
   int actionMismatches = 0;
   for (int k = 0; k < steps; k++) {
     PipSenses se;
@@ -31,6 +31,8 @@ int main(int argc, char **argv) {
     se.charging = (int)charging; se.touched = (int)touched; se.orient = (int)orient;
     for (int i = 0; i < 5; i++) fscanf(f, "%f", &want[i]);
     for (int i = 0; i < PIP_N_ACTIONS; i++) fscanf(f, "%f", &wantLogits[i]);
+    float wantReward;
+    fscanf(f, "%f", &wantReward);
 
     pip_observe(&s, &se);
     float x[PIP_N_FEATURES], logits[PIP_N_ACTIONS];
@@ -43,16 +45,19 @@ int main(int argc, char **argv) {
       if (logits[i] > logits[best]) best = i;
     }
     if (best != a) actionMismatches++;
+    float night = (se.hour >= 22 || se.hour < 7) ? 1.0f : 0.0f;
     pip_act(&s, &se, &t, a);  // follow Python's choice so the runs stay in step
+    float rd = fabsf(pip_reward(&s, &t, a, night) - wantReward);
+    if (rd > worstReward) worstReward = rd;
     float got[5] = {s.food, s.energy, s.fun, s.comfort, s.social};
     for (int i = 0; i < 5; i++) {
       float d = fabsf(got[i] - want[i]);
       if (d > worstNeed) worstNeed = d;
     }
   }
-  printf("steps %d  worst need diff %.6f  worst logit diff %.6f  action mismatches %d\n",
-         steps, worstNeed, worstLogit, actionMismatches);
-  int ok = worstNeed < 2e-3f && worstLogit < 2e-3f && actionMismatches <= 2;
+  printf("steps %d  worst need diff %.6f  worst logit diff %.6f  worst reward diff %.6f  action mismatches %d\n",
+         steps, worstNeed, worstLogit, worstReward, actionMismatches);
+  int ok = worstNeed < 2e-3f && worstLogit < 2e-3f && worstReward < 5e-3f && actionMismatches <= 2;
   printf(ok ? "PASS: C brain and world match Python\n" : "FAIL: C and Python disagree\n");
   return ok ? 0 : 1;
 }
