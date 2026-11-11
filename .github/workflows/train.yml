@@ -37,7 +37,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          chmod +x training/push_status.sh
+          git update-index --chmod=+x training/push_status.sh 2>/dev/null; chmod +x training/push_status.sh
           python training/train.py &
           TRAIN_PID=$!
           while kill -0 $TRAIN_PID 2>/dev/null; do
@@ -103,7 +103,7 @@ jobs:
           git commit -m "Update Pip's trained brain"
           # Other commits may have landed while training ran: rebase and retry.
           for i in 1 2 3 4 5; do
-            git pull --rebase -X theirs origin main && git push && exit 0
+            git pull --rebase --autostash -X theirs origin main && git push && exit 0
             sleep 5
           done
           exit 1
