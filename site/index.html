@@ -137,6 +137,13 @@ h3 { font: 600 14px var(--f-body); margin: 16px 0 8px; }
 .cands .bar span { display: block; height: 100%; background: var(--accent); }
 .cands .row.pick { color: var(--accent); font-weight: 600; }
 .gates { display: flex; gap: 6px; }
+.vgrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.vcard { border: 1px solid var(--line); border-radius: 8px; padding: 12px; display: grid; gap: 2px; min-width: 0; }
+.vlab { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.vbig { font: 400 26px/1.1 var(--f-display); }
+.vcard .muted { font-size: 12px; overflow-wrap: anywhere; }
+.totals { margin-top: 12px; }
+@media (max-width: 620px) { .vgrid { grid-template-columns: 1fr; } }
 .pos { color: var(--accent); font-weight: 600; } .neg { color: var(--neg); font-weight: 600; }
 .act-big { font: 400 26px/1.1 var(--f-display); text-transform: lowercase; }
 .gallery { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; margin-top: 14px; }
@@ -187,6 +194,19 @@ h3 { font: 600 14px var(--f-body); margin: 16px 0 8px; }
         <span>Commit <b id="commit">–</b></span>
       </div>
     </div>
+  </section>
+
+  <section aria-labelledby="ver-h">
+    <h2 id="ver-h">Versions &amp; totals</h2>
+    <div class="vgrid">
+      <div class="vcard"><span class="vlab">Newest PipAI.bin</span><b class="vbig" id="v-fw">–</b><span id="v-fw-sub" class="muted"></span></div>
+      <div class="vcard"><span class="vlab">Brain</span><b class="vbig" id="v-brain">–</b><span id="v-brain-sub" class="muted"></span></div>
+      <div class="vcard"><span class="vlab">Voice</span><b class="vbig" id="v-voice">–</b><span id="v-voice-sub" class="muted"></span></div>
+    </div>
+    <div class="facts totals" id="v-totals"></div>
+    <h3>Saved versions</h3>
+    <div class="scroll"><table id="v-list"><tbody><tr><td class="muted">Each kept version is saved here after its training run.</td></tr></tbody></table></div>
+    <p class="note">Every version that passes its tests is saved as its own GitHub release with its trained models and a PipAI.bin you can flash. To keep training from an older one: Actions → Train Pip brain → Run workflow → from_version.</p>
   </section>
 
   <section aria-labelledby="lm-h">
@@ -412,6 +432,57 @@ function lineChart(svg, series, opts) {
     (opts.dots ? pts.map(p => `<circle cx="${X(p.x)}" cy="${Y(p.y)}" r="4" fill="${p.kept === "old" ? "var(--warn)" : "var(--accent)"}"/>`).join("") : "") +
     `<circle cx="${X(last.x)}" cy="${Y(last.y)}" r="4.5" fill="var(--accent)"/>` +
     `<text x="${Math.min(X(last.x) + 8, W - R - 40)}" y="${Y(last.y) - 8}" fill="var(--ink)">${last.y.toFixed(opts.dp ?? 3)}</text>`;
+}
+
+const fmtBig = n => n >= 1e9 ? (n / 1e9).toFixed(1) + " billion" : n >= 1e6 ? (n / 1e6).toFixed(1) + " million" : Math.round(n).toLocaleString();
+function fmtLong(sec) {
+  sec = Math.round(sec || 0);
+  const h = Math.floor(sec / 3600), m = Math.round((sec % 3600) / 60);
+  return h ? `${h} h ${m} min` : `${m} min`;
+}
+function fmtPipTime(min) {
+  const days = min / 1440;
+  return days >= 365 ? `${(days / 365).toFixed(1)} years` : `${Math.round(days).toLocaleString()} days`;
+}
+function renderVersions() {
+  // What GitHub has right now (the build writes this line into the "latest" release)
+  const m = (release?.body || "").match(/PipAI version (\d+) · brain v(\d+) · voice v(\d+) · built (\S+)/);
+  $("v-fw").textContent = m ? "v" + m[1] : "–";
+  $("v-fw-sub").textContent = m ? `brain v${m[2]} · voice v${m[3]} · built ${ago(m[4])}` : "waiting for the next build";
+  const s = status, v = s?.voice || {};
+  $("v-brain").textContent = s?.brain_version != null ? "v" + s.brain_version : (s?.from_version ? `v${s.from_version}+` : "–");
+  $("v-brain-sub").textContent = s?.brain_version != null
+    ? `${s.kept === "old" ? "kept the previous one" : "newest kept"} · test score ${s.score}`
+    : ["starting", "training", "testing"].includes(s?.state) ? `training (update ${s.update} of ${s.total_updates})` : "";
+  $("v-voice").textContent = v.version != null ? "v" + v.version : "–";
+  $("v-voice-sub").textContent = v.version != null
+    ? `${v.kept === "old" ? "kept the previous one" : "newest kept"} · test loss ${v.test_loss}`
+    : v.state === "training" ? `training (step ${v.step} of ${v.total})` : "";
+  // All-time totals, plus whatever the current run has done so far
+  const t = s?.totals || {}, live = ["starting", "training", "testing", "voice", "trained"].includes(s?.state);
+  const add = (k, cur) => (t[k] || 0) + (live ? (cur || 0) : 0);
+  const runs = (t.runs || 0) + (live ? 1 : 0);
+  const secs = add("brain_seconds", s?.elapsed_s) + add("voice_seconds", v.elapsed_s);
+  const items = [
+    ["Training runs", runs.toLocaleString() + (live ? " (one running)" : "")],
+    ["Computer time", fmtLong(secs)],
+    ["Brain updates", fmtBig(add("brain_updates", s?.update))],
+    ["Simulated Pip-time", fmtPipTime(add("sim_minutes", s?.sim_minutes))],
+    ["Voice steps", fmtBig(add("voice_steps", v.step))],
+    ["Letters read", fmtBig(add("chars_read", v.chars_read))],
+  ];
+  if (t.first_run) items.push(["Training since", new Date(t.first_run).toLocaleDateString([], { month: "short", day: "numeric" })]);
+  $("v-totals").innerHTML = items.map(([k, val]) => `<span>${k} <b>${val}</b></span>`).join("");
+  // Saved versions
+  if (versions.length) {
+    $("v-list").innerHTML = `<thead><tr><th>Version</th><th>Saved</th><th>Program</th><th></th></tr></thead><tbody>` +
+      versions.map(r => {
+        const bin = (r.assets || []).filter(a => /^PipAI-v\d+\.bin$/.test(a.name)).sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0];
+        return `<tr><td>${r.name.replace(/</g, "&lt;")}</td><td>${ago(r.created_at)}</td>
+          <td>${bin ? `<a href="${bin.browser_download_url}">${bin.name}</a>` : '<span class="muted">not built yet</span>'}</td>
+          <td><a href="${r.html_url}" target="_blank" rel="noopener">details</a></td></tr>`;
+      }).join("") + "</tbody>";
+  }
 }
 
 function renderLanguagePanel() {
@@ -1164,7 +1235,7 @@ $("vgo").addEventListener("click", writeSentence);
 $("vtemp").addEventListener("input", e => $("vtemp-val").textContent = (+e.target.value).toFixed(2));
 ["v-ih", "v-o", "v-hr", "v-hz", "v-hn"].forEach(id => attachTip($(id)));
 
-function render() { renderRunLine(); renderLanguagePanel(); renderVoiceProgress(); renderHistory(); renderVoiceWeights(); renderTalk(); renderProgress(); renderChart(); renderMix(); renderNet(); renderWeights(); renderRadars(); renderPersonalities(); renderPipeline(); renderRuns(); }
+function render() { renderVersions(); renderRunLine(); renderLanguagePanel(); renderVoiceProgress(); renderHistory(); renderVoiceWeights(); renderTalk(); renderProgress(); renderChart(); renderMix(); renderNet(); renderWeights(); renderRadars(); renderPersonalities(); renderPipeline(); renderRuns(); }
 buildGallery();
 document.fonts?.ready.then(buildGallery);
 loopPreview();
@@ -1198,6 +1269,16 @@ async function fetchStatus() {
 }
 let apiStatusAt = 0, apiStatusCache = null;
 
+let versions = [], versionsNextAt = 0;
+async function fetchVersions() {
+  if (Date.now() < versionsNextAt || Date.now() < apiBlockedUntil) return;
+  versionsNextAt = Date.now() + 600000;  // every 10 minutes (GitHub allows ~60 API calls an hour)
+  try {
+    const rs = await gh("/releases?per_page=40");
+    versions = (rs || []).filter(r => /^pip-b\d+-v\d+$/.test(r.tag_name));
+  } catch (e) { if (e.message === "rate") apiBlockedUntil = e.reset || Date.now() + 600000; }
+}
+
 async function fetchApi() {
   if (Date.now() < apiNextAt || Date.now() < apiBlockedUntil) return;
   apiNextAt = Date.now() + 180000;
@@ -1220,6 +1301,7 @@ async function poll() {
   let wait = 60, statusErr = "";
   try { status = await fetchStatus(); } catch (e) { statusErr = `Couldn't load training progress (${e.message}).`; }
   await fetchApi();
+  await fetchVersions();
   await loadBrain();
   await loadVoice();
   render();
