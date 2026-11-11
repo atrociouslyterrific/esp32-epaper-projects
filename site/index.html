@@ -300,6 +300,10 @@ h3 { font: 600 14px var(--f-body); margin: 16px 0 8px; }
     </div>
     <div class="said" id="vsaid" aria-live="polite"></div>
     <div class="cands" id="vcands"></div>
+    <h3>Inside Pip's voice</h3>
+    <div class="scroll"><svg class="chart net" id="vnet" viewBox="0 0 820 540" role="img" aria-label="Diagram of Pip's voice model: letters in, memory cells that feed back into themselves, letters out">
+      <g id="vnet-lines"></g><g id="vnet-nodes"></g></svg></div>
+    <p class="note">Left: every letter (and mood code) the voice can read. Middle: its memory cells. They feed back into themselves after every letter (the loop), which is how Pip remembers what it has written so far; three "gates" decide what to keep, forget and add. Right: the letters it can write next. Lines are the real weights (only the strongest are drawn): <span class="pos">teal</span> pushes up, <span class="neg">orange</span> pushes down. Press <b>Write a sentence</b> to watch it work: the letter going in lights up, memory cells glow by how active they are, and each possible next letter grows with how likely it is.</p>
     <p class="note">This runs Pip's real voice model in your browser with the same numbers as the board. It writes one letter at a time: the bars show the letters it was choosing between for the last letter. "Wildness" is the temperature. 0 always picks the most likely letter; higher values take more chances. The board uses 0.75.</p>
     <div class="wgrid">
       <div class="wcard"><h3>Letters → memory</h3><div class="scroll"><canvas id="v-ih" class="heat"></canvas></div></div>
@@ -1029,7 +1033,7 @@ async function writeSentence() {
   voiceBusy = true; $("vgo").disabled = true;
   const mood = $("vmood").value, temp = +$("vtemp").value, said = $("vsaid"), cands = $("vcands");
   let h = new Float32Array(voice.H); h = vStep(h, voice.vocab.indexOf(mood)); h = vStep(h, voice.vocab.indexOf(">"));
-  let text = "";
+  let text = "", lastTok = voice.vocab.indexOf(">");
   for (let n = 0; n < 31; n++) {
     const lg = vLogits(h);
     const mx = Math.max(...lg), p = Array.from(lg, l => Math.exp((l - mx) / Math.max(temp, 1e-3)));
@@ -1037,16 +1041,77 @@ async function writeSentence() {
     let k = 0;
     if (temp <= 0) { k = lg.indexOf(mx); } else { let r = Math.random(), acc = 0; for (k = 0; k < p.length - 1; k++) { acc += p[k]; if (r < acc) break; } }
     const top = p.map((v, i) => [v, i]).sort((a, b) => b[0] - a[0]).slice(0, 5);
+    renderVoiceNet({ inTok: lastTok, h, p, pick: k });
     cands.innerHTML = top.map(([v, i]) => `<div class="row${i === k ? " pick" : ""}"><span>${showChar(voice.vocab[i])}</span><div class="bar"><span style="width:${(v * 100).toFixed(1)}%"></span></div><span>${(v * 100).toFixed(0)}%</span></div>`).join("");
     if (voice.vocab[k] === "\n") break;
     text += voice.vocab[k];
     said.innerHTML = ""; said.append(text.charAt(0).toUpperCase() + text.slice(1)); const cur = document.createElement("span"); cur.className = "cur"; cur.textContent = " "; said.append(cur);
     h = vStep(h, k);
-    await new Promise(r => setTimeout(r, reduceMotion() ? 0 : 90));
+    lastTok = k;
+    await new Promise(r => setTimeout(r, reduceMotion() ? 0 : 160));
   }
   said.textContent = text ? text.charAt(0).toUpperCase() + text.slice(1) : "(Pip said nothing)";
   voiceBusy = false; $("vgo").disabled = false;
 }
+// ---- the voice network diagram (static weights + live activity)
+const VN = { W: 820, H: 540, T: 16, B: 24, xIn: 220, xMem: 430, xOut: 640 };
+let vnetFor = null;
+const vLabel = c => c === "\n" ? "end" : c === " " ? "␣" : c === ">" ? ">" : /[A-Z]/.test(c) ? `mood ${c}` : c;
+const vY = (i, n) => VN.T + (i + .5) * (VN.H - VN.T - VN.B) / n;
+
+function buildVoiceNet() {
+  if (!voice || vnetFor === voice) return;
+  vnetFor = voice;
+  const { H, V, Wih, Wo } = voice;
+  const lines = (pairs, max) => {  // group lines by sign and strength so thousands stay fast to draw
+    const b = {};
+    for (const [x1, y1, x2, y2, w] of pairs) {
+      const s = Math.abs(w) / max; if (s < .35) continue;
+      const key = (w >= 0 ? "p" : "n") + Math.min(4, Math.floor((s - .35) / .65 * 5));
+      b[key] = (b[key] || "") + `M${x1},${y1.toFixed(1)}L${x2},${y2.toFixed(1)}`;
+    }
+    return Object.entries(b).map(([k, d]) => `<path d="${d}" stroke="var(${k[0] === "p" ? "--accent" : "--neg"})" stroke-width="${(.35 + +k[1] * .2).toFixed(2)}" opacity="${(.1 + +k[1] * .13).toFixed(2)}" fill="none"/>`).join("");
+  };
+  // letters -> memory: the "new memory" gate (rows 2H..3H of the input weights)
+  const inPairs = [], outPairs = [];
+  let maxIn = 0, maxOut = 0;
+  for (let j = 0; j < H; j++) for (let v = 0; v < V; v++) { const w = Wih[(2 * H + j) * V + v]; maxIn = Math.max(maxIn, Math.abs(w)); inPairs.push([VN.xIn, vY(v, V), VN.xMem, vY(j, H), w]); }
+  for (let v = 0; v < V; v++) for (let k = 0; k < H; k++) { const w = Wo[v * H + k]; maxOut = Math.max(maxOut, Math.abs(w)); outPairs.push([VN.xMem, vY(k, H), VN.xOut, vY(v, V), w]); }
+  // the memory loop: an arc from the memory column back into itself
+  const top = vY(0, H), bot = vY(H - 1, H), lx = VN.xMem + 70;
+  const loop = `<path d="M${VN.xMem + 6},${bot} C${lx},${bot} ${lx},${top} ${VN.xMem + 6},${top}" fill="none" stroke="var(--ink)" stroke-width="1.5" stroke-dasharray="4 3"/>
+    <path d="M${VN.xMem + 6},${top} l7,-4 l0,8 z" fill="var(--ink)"/>
+    <text x="${lx + 4}" y="${(top + bot) / 2 - 6}" class="lbl">memory loop</text>
+    <text x="${lx + 4}" y="${(top + bot) / 2 + 8}">reset · update · new</text>`;
+  const heads = `<text x="${VN.xIn}" y="${VN.H - 4}" text-anchor="middle">${V} letters in</text>
+    <text x="${VN.xMem}" y="${VN.H - 4}" text-anchor="middle">${H} memory cells</text>
+    <text x="${VN.xOut}" y="${VN.H - 4}" text-anchor="middle">next letter</text>`;
+  $("vnet-lines").innerHTML = lines(inPairs, maxIn) + lines(outPairs, maxOut) + loop + heads;
+  renderVoiceNet(null);
+}
+
+// state: { inTok, h, p, pick } while writing, or null when idle
+function renderVoiceNet(state) {
+  if (!voice) return;
+  const { H, V, vocab } = voice;
+  let out = "";
+  for (let v = 0; v < V; v++) {
+    const y = vY(v, V), on = state && state.inTok === v;
+    out += `<circle cx="${VN.xIn}" cy="${y.toFixed(1)}" r="${on ? 4 : 2.2}" fill="${on ? "var(--accent)" : "var(--card)"}" stroke="var(--ink)" stroke-width="${on ? 1.5 : .8}"/>`;
+    out += `<text x="${VN.xIn - 8}" y="${(y + 3).toFixed(1)}" text-anchor="end" font-size="8"${on ? ' class="lbl" font-weight="700"' : ""}>${vLabel(vocab[v]).replace(/</g, "&lt;")}</text>`;
+  }
+  for (let j = 0; j < H; j++) {
+    const a = state ? state.h[j] : 0, y = vY(j, H);
+    out += `<circle cx="${VN.xMem}" cy="${y.toFixed(1)}" r="1.8" fill="${a >= 0 ? "var(--accent)" : "var(--neg)"}" fill-opacity="${state ? Math.min(1, Math.abs(a)).toFixed(2) : 0}" stroke="var(--ink)" stroke-width=".5"/>`;
+  }
+  for (let v = 0; v < V; v++) {
+    const pr = state ? state.p[v] : 0, y = vY(v, V), pick = state && state.pick === v;
+    out += `<circle cx="${VN.xOut}" cy="${y.toFixed(1)}" r="${(2 + 9 * Math.sqrt(pr)).toFixed(1)}" fill="${pick ? "var(--accent)" : "var(--card)"}" fill-opacity="${pick ? 1 : .9}" stroke="var(--ink)" stroke-width="${pick ? 1.5 : .8}"/>`;
+    out += `<text x="${VN.xOut + 14}" y="${(y + 3).toFixed(1)}" font-size="8"${pick ? ' class="lbl" font-weight="700"' : ""}>${vLabel(vocab[v]).replace(/</g, "&lt;")}${state && pr >= .05 ? ` ${Math.round(pr * 100)}%` : ""}</text>`;
+  }
+  $("vnet-nodes").innerHTML = out;
+}
+
 function renderVoiceWeights() {
   if (!voice) return;
   const { H, V, vocab, Wih, Whh, bih, bhh, Wo, bo } = voice;
@@ -1075,6 +1140,7 @@ function renderVoiceWeights() {
     $("vmood").value = "J";
   }
   $("vgo").disabled = voiceBusy;
+  buildVoiceNet();
 }
 $("vgo").addEventListener("click", writeSentence);
 $("vtemp").addEventListener("input", e => $("vtemp-val").textContent = (+e.target.value).toFixed(2));
