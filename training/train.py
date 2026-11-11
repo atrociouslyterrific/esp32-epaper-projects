@@ -20,9 +20,9 @@ SEED = 7
 HIDDEN = 48
 ENVS = 128
 ROLLOUT = 256
-UPDATES = int(os.environ.get("PIP_UPDATES", "300"))
+UPDATES = int(os.environ.get("PIP_UPDATES", "600"))
 GAMMA, LAM = 0.99, 0.95
-CLIP, ENT_COEF, VF_COEF, LR = 0.2, 0.01, 0.5, 3e-4
+CLIP, ENT_COEF, VF_COEF, LR = 0.2, 0.005, 0.5, 3e-4
 EPOCHS, MINIBATCH = 4, 4096
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

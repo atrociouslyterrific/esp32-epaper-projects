@@ -170,8 +170,15 @@ def reward(st, tr, a):
     w_social = 0.3 + 0.9 * affectionate
     r = -(w_food * (1 - st.food) ** 2 + w_energy * (1 - st.energy) ** 2 + w_fun * (1 - st.fun) ** 2
           + w_comfort * (1 - st.comfort) ** 2 + w_social * (1 - st.social) ** 2)
-    r += 0.02 * curious * (a == EXPLORE) + 0.02 * playful * (a == PLAY) + 0.01 * lazy * (a == NAP)
-    r += 0.02 * affectionate * (a == SING) - 0.01 * brave * (a == HIDE)
+    # Personality: each trait makes its favourite activity enjoyable in itself,
+    # and a LOW trait makes that activity unpleasant (a lazy Pip hates exploring...).
+    like = 0.16
+    r += like * (curious - 0.5) * (a == EXPLORE)
+    r += like * (playful - 0.5) * (a == PLAY)
+    r += like * (lazy - 0.5) * (a == NAP)
+    r -= like * 0.5 * (lazy - 0.5) * ((a == EXPLORE) | (a == PLAY))
+    r += like * (affectionate - 0.5) * ((a == SING) | (a == CALL))
+    r += like * (0.5 - brave) * (a == HIDE)
     r -= 0.01 * ((st.repeat > 8) & (a != NAP))  # real pets don't do one thing forever
     return r
 
