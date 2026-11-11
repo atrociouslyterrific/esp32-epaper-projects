@@ -1325,22 +1325,49 @@ void checkWifi() {
 
 // ================================================================ buttons
 
-bool bootWasDown = true, pwrWasDown = true, bootHoldUsed = true;
-unsigned long bootDownAt = 0;
+// The screen takes about half a second per frame, and the program can't look at the
+// buttons while a frame is being drawn. So the buttons use interrupts: the instant
+// a button changes, these tiny functions note it down, and checkButtons() acts on
+// it right after the frame. (They read the GPIO register directly so they're safe
+// to run at any moment.)
+volatile bool isrBootDown = false, isrBootTap = false, isrPwrTap = false;
+volatile unsigned long isrBootDownAt = 0, isrPwrAt = 0;
+bool bootHoldUsed = false;
+
+void IRAM_ATTR onBootChange() {
+  unsigned long now = millis();
+  bool down = !(REG_READ(GPIO_IN_REG) & BIT(BTN_BOOT));
+  if (down && !isrBootDown) { isrBootDown = true; isrBootDownAt = now; }
+  else if (!down && isrBootDown) {
+    isrBootDown = false;
+    unsigned long held = now - isrBootDownAt;
+    if (held > 30 && held < 5000) isrBootTap = true;  // a tap (not a bounce, not the 5 s hold)
+  }
+}
+
+void IRAM_ATTR onPwrPress() {
+  unsigned long now = millis();
+  if (now - isrPwrAt > 250) { isrPwrAt = now; isrPwrTap = true; }  // ignore switch bounce
+}
+
+void startButtons() {
+  attachInterrupt(digitalPinToInterrupt(BTN_BOOT), onBootChange, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(BTN_PWR), onPwrPress, FALLING);
+}
 
 void checkButtons() {
-  bool boot = digitalRead(BTN_BOOT) == LOW;
-  bool pwr = digitalRead(BTN_PWR) == LOW;
-  bool petted = false;
+  // Hold BOOT for 5 seconds: forget the Wi-Fi
+  if (isrBootDown && !bootHoldUsed && millis() - isrBootDownAt > 5000) { bootHoldUsed = true; forgetWifi(); }
+  if (!isrBootDown) bootHoldUsed = false;
 
-  if (boot && !bootWasDown) { bootDownAt = millis(); bootHoldUsed = false; }
-  if (boot && !bootHoldUsed && millis() - bootDownAt > 5000) { bootHoldUsed = true; forgetWifi(); }
-  if (!boot && bootWasDown && !bootHoldUsed) dropSnack();  // tap BOOT: drop a snack
-  if (pwr && !pwrWasDown) petted = true;                   // tap PWR: pet Pip
-  bootWasDown = boot;
-  pwrWasDown = pwr;
-
-  if (petted) {
+  if (isrBootTap) {  // tap BOOT: drop a snack
+    isrBootTap = false;
+    Serial.println("BOOT tapped: snack!");
+    dropSnack();
+  }
+  if (isrPwrTap) {   // tap PWR: pet Pip
+    isrPwrTap = false;
+    Serial.println("PWR tapped: pats!");
     touchedPending = true;
     snprintf(reason, sizeof(reason), "Ooh, pats! <3");
     startHop();
@@ -1356,6 +1383,7 @@ void setup() {
   pinMode(EPD_PWR, OUTPUT); digitalWrite(EPD_PWR, LOW);
   pinMode(BTN_BOOT, INPUT_PULLUP);
   pinMode(BTN_PWR, INPUT_PULLUP);
+  startButtons();
   delay(100);
   Serial.begin(115200);
   delay(300);
