@@ -1034,12 +1034,28 @@ loopPreview();
 let apiNextAt = 0, apiBlockedUntil = 0, apiNote = "";
 const isBusy = () => ["starting", "training", "testing", "voice", "trained"].includes(status?.state) || runs.some(r => r.status !== "completed");
 
+// GitHub's raw file server caches files for up to 5 minutes. Training also saves its
+// progress as m/<minute>.json, a new name every minute, which can't be stale - so try
+// the last few minutes first and use whichever is newest.
+const rawStatus = path => fetch(`https://raw.githubusercontent.com/${REPO}/status/${path}`, { cache: "no-store" })
+  .then(r => r.ok ? r.json() : null).catch(() => null);
 async function fetchStatus() {
-  const r = await fetch(`https://raw.githubusercontent.com/${REPO}/status/status.json?t=${Date.now()}`, { cache: "no-store" });
-  if (r.status === 404) return null;
-  if (!r.ok) throw new Error("HTTP " + r.status);
-  return r.json();
+  const m = Math.floor(Date.now() / 60000);
+  const tries = await Promise.all([m, m - 1, m - 2, m - 3].map(k => rawStatus(`m/${k}.json`)));
+  const fresh = tries.filter(Boolean).sort((a, b) => (b.updated || "").localeCompare(a.updated || ""))[0];
+  if (fresh) return fresh;
+  // No per-minute copies (between runs, or an older training script): ask GitHub's API,
+  // which is always fresh but allows ~60 calls an hour, so at most once a minute.
+  if (Date.now() - apiStatusAt > 60000 && Date.now() > apiBlockedUntil) {
+    apiStatusAt = Date.now();
+    try { const s = await gh("/contents/status.json?ref=status", true); if (s) { apiStatusCache = s; return s; } }
+    catch (e) { if (e.message === "rate") apiBlockedUntil = e.reset || Date.now() + 600000; }
+  }
+  const plain = await rawStatus("status.json");  // may be a few minutes old
+  const best = [apiStatusCache, plain].filter(Boolean).sort((a, b) => (b.updated || "").localeCompare(a.updated || ""))[0];
+  return best || status;  // keep what we have if GitHub didn't answer
 }
+let apiStatusAt = 0, apiStatusCache = null;
 
 async function fetchApi() {
   if (Date.now() < apiNextAt || Date.now() < apiBlockedUntil) return;
