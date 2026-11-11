@@ -1,0 +1,329 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Pip Brain Lab</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Silkscreen&display=swap">
+<style>
+/* Layout: one column like a lab notebook page; e-paper greys with one teal ink accent. */
+:root {
+  --paper: #ECEDE8; --card: #F7F8F4; --ink: #1C1F1D; --muted: #636A65; --line: #C9CCC4;
+  --accent: #2F6F5E; --accent-soft: #D5E6DF;
+  --ok: #2E7D4F; --warn: #A86B12; --bad: #B3412F;
+  --f-display: "Silkscreen", "Courier New", monospace;
+  --f-body: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --paper: #121513; --card: #1A1E1C; --ink: #E3E6E0; --muted: #959C96; --line: #2C322F;
+  --accent: #74C3AA; --accent-soft: #1F3A32; --ok: #5FBF85; --warn: #E0A84A; --bad: #E77A66; color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --paper: #121513; --card: #1A1E1C; --ink: #E3E6E0; --muted: #959C96; --line: #2C322F;
+  --accent: #74C3AA; --accent-soft: #1F3A32; --ok: #5FBF85; --warn: #E0A84A; --bad: #E77A66; color-scheme: dark; }
+
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--paper); color: var(--ink); font: 15px/1.55 var(--f-body); }
+.wrap { max-width: 880px; margin: 0 auto; padding-block: 28px 48px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: grid; gap: 18px; }
+header { display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: 12px; }
+h1 { font: 400 32px/1 var(--f-display); margin: 0; letter-spacing: .5px; text-wrap: balance; }
+.sub { color: var(--muted); margin-top: 6px; }
+h2 { font: 600 13px/1 var(--f-body); text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 12px; }
+section { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 18px; min-width: 0; }
+.mono, .num { font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+.muted { color: var(--muted); }
+a { color: var(--accent); }
+a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.pill { display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px; border-radius: 999px;
+  font: 500 14px var(--f-body); border: 1px solid currentColor; }
+.pill::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+.s-run { color: var(--warn); } .s-ok { color: var(--ok); } .s-bad { color: var(--bad); } .s-idle { color: var(--muted); }
+.s-run.pill::before { animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .25; } }
+@media (prefers-reduced-motion: reduce) { .s-run.pill::before { animation: none; } }
+
+.now { display: grid; grid-template-columns: auto 1fr; gap: 6px 24px; align-items: end; }
+.big { font: 400 44px/1 var(--f-display); }
+.cells { display: grid; grid-template-columns: repeat(30, 1fr); gap: 3px; grid-column: 1 / -1; margin-top: 10px; }
+.cells i { height: 14px; border-radius: 2px; background: var(--line); }
+.cells i.on { background: var(--ink); }
+.facts { display: flex; flex-wrap: wrap; gap: 8px 24px; grid-column: 1 / -1; color: var(--muted); }
+.facts b { color: var(--ink); font-weight: 500; font-family: var(--f-mono); }
+
+.pipeline { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.stage { border: 1px solid var(--line); border-radius: 8px; padding: 12px; display: grid; gap: 4px; min-width: 0; }
+.stage .label { font-weight: 600; }
+.stage .state { font-size: 13px; display: flex; align-items: center; gap: 6px; }
+.stage .state::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; flex: none; }
+.stage small { color: var(--muted); overflow-wrap: anywhere; }
+@media (max-width: 620px) { .pipeline { grid-template-columns: repeat(2, minmax(0, 1fr)); } .now { grid-template-columns: 1fr; } }
+
+.chart { width: 100%; height: auto; display: block; }
+.chart text { fill: var(--muted); font: 11px var(--f-mono); }
+.mix { display: grid; gap: 6px; }
+.mix .row { display: grid; grid-template-columns: 92px 1fr 48px; gap: 10px; align-items: center; }
+.mix .bar { height: 10px; background: var(--accent-soft); border-radius: 3px; overflow: hidden; }
+.mix .bar span { display: block; height: 100%; background: var(--accent); }
+
+.scroll { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td { padding: 7px 6px; text-align: center; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; }
+th { font-weight: 500; color: var(--muted); }
+td.cell { font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+
+.runs { list-style: none; margin: 0; padding: 0; display: grid; }
+.runs li { display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; gap: 10px; align-items: center;
+  padding: 9px 0; border-bottom: 1px solid var(--line); }
+.runs li:last-child { border-bottom: 0; }
+.dot { width: 10px; height: 10px; border-radius: 50%; background: currentColor; }
+.runs .t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.note { font-size: 13px; color: var(--muted); }
+.err { color: var(--bad); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Pip Brain Lab</h1>
+      <div class="sub">Live training of Pip's neural network on GitHub</div>
+    </div>
+    <span id="overall" class="pill s-idle">Checking…</span>
+  </header>
+
+  <section aria-labelledby="now-h">
+    <h2 id="now-h">Training progress</h2>
+    <div class="now">
+      <div class="big num" id="pct">–</div>
+      <div><div id="step" class="mono">Waiting for the first training run</div>
+        <div class="muted" id="phase"></div></div>
+      <div class="cells" id="cells" aria-hidden="true"></div>
+      <div class="facts">
+        <span>Elapsed <b id="elapsed">–</b></span>
+        <span>Time left <b id="eta">–</b></span>
+        <span>Simulated Pip-minutes <b id="simmin">–</b></span>
+        <span>Commit <b id="commit">–</b></span>
+      </div>
+    </div>
+  </section>
+
+  <section aria-labelledby="pipe-h">
+    <h2 id="pipe-h">From training to your board</h2>
+    <div class="pipeline">
+      <div class="stage" id="st-train"><span class="label">1 · Train brain</span><span class="state s-idle">Waiting</span><small></small></div>
+      <div class="stage" id="st-test"><span class="label">2 · Check C = Python</span><span class="state s-idle">Waiting</span><small></small></div>
+      <div class="stage" id="st-build"><span class="label">3 · Build program</span><span class="state s-idle">Waiting</span><small></small></div>
+      <div class="stage" id="st-ready"><span class="label">4 · Ready to flash</span><span class="state s-idle">Waiting</span><small></small></div>
+    </div>
+  </section>
+
+  <section aria-labelledby="rw-h">
+    <h2 id="rw-h">How happy Pip is getting</h2>
+    <svg class="chart" id="chart" viewBox="0 0 820 260" role="img" aria-label="Average reward per training update"></svg>
+    <p class="note">Each point is one training update (32,768 simulated 3-minute steps). Reward is how well Pip's needs are met, plus enjoying activities that fit its personality. Higher means a happier Pip. The thick line is a 10-update average.</p>
+  </section>
+
+  <section aria-labelledby="mix-h">
+    <h2 id="mix-h">What Pip chooses to do right now</h2>
+    <div class="mix" id="mix"><span class="muted">No data yet.</span></div>
+  </section>
+
+  <section aria-labelledby="pers-h">
+    <h2 id="pers-h">Does personality change behaviour?</h2>
+    <div class="scroll"><table id="pers"><tbody><tr><td class="muted">Appears when training finishes.</td></tr></tbody></table></div>
+    <p class="note">% of time each personality spends on each action over 3 simulated days. If personality works, the rows should look different from each other.</p>
+  </section>
+
+  <section aria-labelledby="runs-h">
+    <h2 id="runs-h">Recent GitHub runs</h2>
+    <ul class="runs" id="runs"><li class="muted">Loading…</li></ul>
+  </section>
+
+  <p class="note" id="foot">Updates automatically.</p>
+</div>
+
+<script>
+const host = location.hostname.endsWith(".github.io") ? location.hostname.split(".")[0] : "atrociouslyterrific";
+const repoName = location.hostname.endsWith(".github.io") && location.pathname.split("/")[1] ? location.pathname.split("/")[1] : "esp32-epaper-projects";
+const REPO = `${host}/${repoName}`;
+const API = `https://api.github.com/repos/${REPO}`;
+const ACTIONS = ["idle","nap","eat","explore","play","sing","hide","warm_up","cool_down","call"];
+const $ = id => document.getElementById(id);
+let status = null, runs = [], release = null, nextTimer = null;
+
+async function gh(path, raw) {
+  const r = await fetch(API + path, { cache: "no-cache",
+    headers: { Accept: raw ? "application/vnd.github.raw+json" : "application/vnd.github+json" } });
+  if (r.status === 404) return null;
+  if (r.status === 403 || r.status === 429) {
+    const reset = Number(r.headers.get("x-ratelimit-reset")) * 1000;
+    const err = new Error("rate"); err.reset = reset; throw err;
+  }
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  return raw ? JSON.parse(await r.text()) : r.json();
+}
+
+const fmtDur = s => { if (s == null || !isFinite(s)) return "–"; s = Math.max(0, Math.round(s));
+  const m = Math.floor(s / 60), r = s % 60; return m ? `${m}m ${String(r).padStart(2,"0")}s` : `${r}s`; };
+const ago = iso => { if (!iso) return ""; const s = (Date.now() - new Date(iso)) / 1000;
+  if (s < 60) return "just now"; if (s < 3600) return Math.floor(s/60) + " min ago";
+  if (s < 86400) return Math.floor(s/3600) + " h ago"; return Math.floor(s/86400) + " d ago"; };
+const runClass = r => r.status !== "completed" ? "s-run" : r.conclusion === "success" ? "s-ok" :
+  r.conclusion === "cancelled" || r.conclusion === "skipped" ? "s-idle" : "s-bad";
+const runWord = r => r.status !== "completed" ? (r.status === "queued" ? "Queued" : "Running") :
+  ({success: "Passed", failure: "Failed", cancelled: "Cancelled", skipped: "Skipped"})[r.conclusion] || r.conclusion;
+
+function setStage(id, cls, word, detail, link) {
+  const el = $(id), st = el.querySelector(".state"), sm = el.querySelector("small");
+  st.className = "state " + cls; st.textContent = word;
+  sm.textContent = "";
+  if (link) { const a = document.createElement("a"); a.href = link.href; a.textContent = link.text; a.target = "_blank"; a.rel = "noopener"; sm.append(a); if (detail) sm.append(" · " + detail); }
+  else sm.textContent = detail || "";
+}
+
+function renderProgress() {
+  const s = status;
+  const total = s?.total_updates || 600, done = s?.update || 0;
+  const frac = total ? done / total : 0;
+  $("pct").textContent = s ? Math.round(frac * 100) + "%" : "–";
+  $("step").textContent = s ? `Update ${done} of ${total}` : "Waiting for the first training run";
+  const phase = { starting: "Starting up", training: "Learning in the simulated world", testing: "Writing the brain and testing personalities",
+    trained: "Checking the board's C code matches", done: "Finished", failed: "Something went wrong" }[s?.state] || "";
+  $("phase").textContent = phase + (s?.updated ? ` · last report ${ago(s.updated)}` : "");
+  $("cells").innerHTML = Array.from({length: 30}, (_, i) => `<i class="${i < Math.round(frac * 30) ? "on" : ""}"></i>`).join("");
+  $("elapsed").textContent = fmtDur(s?.elapsed_s);
+  const eta = s && done && s.state === "training" ? s.elapsed_s / done * (total - done) : (s && done >= total ? 0 : null);
+  $("eta").textContent = fmtDur(eta);
+  $("simmin").textContent = s ? (done * 32768 * 3).toLocaleString() : "–";
+  $("commit").textContent = s?.commit || "–";
+}
+
+function niceTicks(lo, hi, n) {
+  const span = hi - lo || 1, step0 = span / n, mag = 10 ** Math.floor(Math.log10(step0));
+  const step = [1, 2, 2.5, 5, 10].map(k => k * mag).find(k => k >= step0);
+  const ticks = []; for (let v = Math.ceil(lo / step) * step; v <= hi + 1e-9; v += step) ticks.push(+v.toFixed(6));
+  return ticks;
+}
+
+function renderChart() {
+  const svg = $("chart"), h = status?.reward_history || [];
+  const W = 820, H = 260, L = 56, R = 14, T = 14, B = 34;
+  if (h.length < 2) { svg.innerHTML = `<text x="${W/2}" y="${H/2}" text-anchor="middle">Chart appears after a few updates</text>`; return; }
+  const total = Math.max(status.total_updates || h.length, h.length);
+  let lo = Math.min(...h), hi = Math.max(...h); const pad = (hi - lo) * 0.08 || 0.05; lo -= pad; hi += pad;
+  const yt = niceTicks(lo, hi, 4); lo = Math.min(lo, yt[0]); hi = Math.max(hi, yt[yt.length - 1]);
+  const x = i => L + (i / (total - 1)) * (W - L - R), y = v => T + (1 - (v - lo) / (hi - lo)) * (H - T - B);
+  const xt = niceTicks(0, total, 6).filter(v => v <= total);
+  const sm = h.map((_, i) => { const a = h.slice(Math.max(0, i - 9), i + 1); return a.reduce((p, c) => p + c, 0) / a.length; });
+  const path = arr => arr.map((v, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join("");
+  const last = sm.length - 1;
+  svg.innerHTML =
+    yt.map(v => `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line)" stroke-width="1"/>
+      <text x="${L - 8}" y="${y(v) + 4}" text-anchor="end">${v.toFixed(2)}</text>`).join("") +
+    xt.map(v => `<text x="${x(Math.min(v, total - 1))}" y="${H - 12}" text-anchor="middle">${v}</text>`).join("") +
+    `<text x="${W - R}" y="${H - 1}" text-anchor="end">training update</text>` +
+    `<path d="${path(sm)} L${x(last).toFixed(1)},${H - B} L${x(0)},${H - B} Z" fill="var(--accent-soft)" stroke="none" opacity=".7"/>` +
+    `<path d="${path(h)}" fill="none" stroke="var(--muted)" stroke-width="1" opacity=".55"/>` +
+    `<path d="${path(sm)}" fill="none" stroke="var(--accent)" stroke-width="2.5"/>` +
+    `<circle cx="${x(last)}" cy="${y(sm[last])}" r="4.5" fill="var(--accent)"/>` +
+    `<text x="${Math.min(x(last) + 8, W - R - 40)}" y="${y(sm[last]) - 8}" fill="var(--ink)">${sm[last].toFixed(3)}</text>`;
+}
+
+function renderMix() {
+  const m = status?.action_mix;
+  if (!m || !m.length) return;
+  $("mix").innerHTML = ACTIONS.map((a, i) => `<div class="row"><span>${a.replace("_", " ")}</span>
+    <div class="bar"><span style="width:${(m[i] * 100).toFixed(1)}%"></span></div><span class="num">${(m[i] * 100).toFixed(0)}%</span></div>`).join("");
+}
+
+function renderPersonalities() {
+  const p = status?.personalities;
+  if (!p) { if (status?.state === "training") $("pers").innerHTML = `<tbody><tr><td class="muted">Appears when training finishes.</td></tr></tbody>`; return; }
+  const max = Math.max(...p.rows.flatMap(r => r.pct));
+  const head = `<thead><tr><th>Personality</th>${p.actions.map(a => `<th>${a.replace("_", " ")}</th>`).join("")}</tr></thead>`;
+  const body = p.rows.map(r => `<tr><td>${r.name}</td>${r.pct.map(v =>
+    `<td class="cell" style="background:color-mix(in srgb, var(--accent) ${Math.round(v / max * 55)}%, transparent)">${Math.round(v)}</td>`).join("")}</tr>`).join("");
+  $("pers").innerHTML = head + `<tbody>${body}</tbody>`;
+}
+
+function renderPipeline() {
+  const s = status, train = runs.find(r => r.name === "Train Pip brain"), build = runs.find(r => r.name === "Build sketches");
+  // 1 Train
+  if (!s && !train) setStage("st-train", "s-idle", "No runs yet");
+  else if (s?.state === "failed" || (train && train.status === "completed" && train.conclusion === "failure" && s?.state !== "done"))
+    setStage("st-train", "s-bad", "Failed", "", train && { href: train.html_url, text: "logs" });
+  else if (["starting", "training", "testing"].includes(s?.state)) setStage("st-train", "s-run", "Training", `${s.update}/${s.total_updates}`, train && { href: train.html_url, text: "logs" });
+  else setStage("st-train", "s-ok", "Done", s?.updated ? ago(s.updated) : "", train && { href: train.html_url, text: "logs" });
+  // 2 Test
+  if (s?.c_test === "pass") setStage("st-test", "s-ok", "Match", "board code = trained brain");
+  else if (s?.c_test === "fail") setStage("st-test", "s-bad", "Mismatch", s.c_test_detail || "");
+  else if (s?.state === "trained") setStage("st-test", "s-run", "Checking");
+  else setStage("st-test", "s-idle", "Waiting");
+  // 3 Build
+  if (!build) setStage("st-build", "s-idle", "Waiting");
+  else setStage("st-build", runClass(build), runWord(build), ago(build.updated_at), { href: build.html_url, text: "logs" });
+  // 4 Ready
+  const asset = release?.assets?.find(a => a.name === "PipAI.bin");
+  const trainedAt = s?.updated ? new Date(s.updated) : null;
+  if (asset && (!trainedAt || new Date(asset.updated_at) >= trainedAt) && s?.state === "done")
+    setStage("st-ready", "s-ok", "Ready", `updated ${ago(asset.updated_at)}`, { href: asset.browser_download_url, text: "PipAI.bin" });
+  else if (asset) setStage("st-ready", "s-idle", "Older version", `newer one coming`, { href: asset.browser_download_url, text: "PipAI.bin" });
+  else setStage("st-ready", "s-idle", "Waiting");
+
+  // Overall pill
+  const el = $("overall");
+  let cls = "s-idle", word = "Idle";
+  if (["starting", "training", "testing", "trained"].includes(s?.state)) { cls = "s-run"; word = "Training"; }
+  else if (build && build.status !== "completed") { cls = "s-run"; word = "Building"; }
+  else if (s?.state === "failed" || s?.c_test === "fail") { cls = "s-bad"; word = "Needs attention"; }
+  else if (s?.state === "done") { cls = "s-ok"; word = "Brain ready"; }
+  el.className = "pill " + cls; el.textContent = word;
+}
+
+function renderRuns() {
+  if (!runs.length) { $("runs").innerHTML = `<li class="muted">No runs yet.</li>`; return; }
+  $("runs").innerHTML = runs.slice(0, 8).map(r => `<li><span class="dot ${runClass(r)}"></span>
+    <span class="t"><a href="${r.html_url}" target="_blank" rel="noopener">${r.name}</a> · <span class="muted">${(r.display_title || "").replace(/</g, "&lt;")}</span></span>
+    <span class="muted mono">${runWord(r)} · ${ago(r.updated_at)}</span></li>`).join("");
+}
+
+function render() { renderProgress(); renderChart(); renderMix(); renderPersonalities(); renderPipeline(); renderRuns(); }
+
+async function poll() {
+  clearTimeout(nextTimer);
+  let wait = 90;
+  try {
+    const [st, rs, rel] = await Promise.all([
+      gh("/contents/status.json?ref=status", true).catch(e => { if (e.message === "rate") throw e; return status; }),
+      gh("/actions/runs?per_page=10"),
+      gh("/releases/tags/latest").catch(e => { if (e.message === "rate") throw e; return release; }),
+    ]);
+    status = st; runs = rs?.workflow_runs || []; release = rel;
+    render();
+    const busy = ["starting", "training", "testing", "trained"].includes(status?.state) || runs.some(r => r.status !== "completed");
+    wait = busy ? 20 : 90;
+    $("foot").textContent = `Checked ${new Date().toLocaleTimeString()} · next check in ${wait}s`;
+  } catch (e) {
+    if (e.message === "rate") {
+      wait = Math.max(30, Math.ceil(((e.reset || Date.now() + 600000) - Date.now()) / 1000));
+      $("foot").innerHTML = `<span class="err">GitHub only allows about 60 checks an hour from one network. Trying again in ${Math.ceil(wait / 60)} min.</span>`;
+    } else {
+      $("foot").innerHTML = `<span class="err">Couldn't reach GitHub (${e.message}). Retrying in 60 s.</span>`;
+      wait = 60;
+    }
+  }
+  nextTimer = setTimeout(poll, wait * 1000);
+}
+document.addEventListener("visibilitychange", () => { if (!document.hidden) poll(); });
+render();
+poll();
+</script>
+</body>
+</html>

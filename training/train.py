@@ -5,6 +5,7 @@ Runs on GitHub Actions. Outputs:
   training/out/trajectory.txt - a recorded run the C test replays to check C == Python
   training/out/report.md      - how different personalities behave
 """
+import json
 import os
 import sys
 import time
@@ -20,13 +21,28 @@ SEED = 7
 HIDDEN = 48
 ENVS = 128
 ROLLOUT = 256
-UPDATES = int(os.environ.get("PIP_UPDATES", "600"))
+UPDATES = int(os.environ.get("PIP_UPDATES", "1000"))
 GAMMA, LAM = 0.99, 0.95
 CLIP, ENT_COEF, VF_COEF, LR = 0.2, 0.005, 0.5, 3e-4
 EPOCHS, MINIBATCH = 4, 4096
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, "training", "out")
+STATUS_PATH = os.path.join(OUT, "status.json")
+STATUS = {"state": "starting", "update": 0, "total_updates": UPDATES, "elapsed_s": 0,
+          "reward_history": [], "action_mix": [], "personalities": None,
+          "started": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+          "run_url": os.environ.get("RUN_URL", ""), "commit": os.environ.get("GITHUB_SHA", "")[:7]}
+
+
+def write_status(**changes):
+    """Save training progress; the workflow uploads this file for the status website."""
+    STATUS.update(changes)
+    STATUS["updated"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    tmp = STATUS_PATH + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(STATUS, f)
+    os.replace(tmp, STATUS_PATH)
 
 
 class Actor(nn.Module):
@@ -111,6 +127,10 @@ def train():
                 nn.utils.clip_grad_norm_(list(actor.parameters()) + list(critic.parameters()), 0.5)
                 opt.step()
 
+        mix = np.bincount(acts.ravel(), minlength=W.N_ACTIONS) / acts.size
+        STATUS["reward_history"].append(round(float(rews.mean()), 5))
+        write_status(state="training", update=update + 1, elapsed_s=round(time.time() - start),
+                     action_mix=[round(float(m), 4) for m in mix])
         if update % 10 == 0 or update == UPDATES - 1:
             print(f"update {update:4d}  avg reward/step {rews.mean():+.4f}  "
                   f"{time.time() - start:5.0f}s", flush=True)
@@ -196,6 +216,7 @@ def personality_report(actor, path):
              "Numbers are the % of time spent on each action.\n",
              "| Personality | " + " | ".join(W.ACTIONS) + " |",
              "|---|" + "---|" * W.N_ACTIONS]
+    rows = []
     for name, traits in people.items():
         rng = np.random.default_rng(99)
         world = W.World(64, rng, episode_steps=10 ** 9)
@@ -212,6 +233,8 @@ def personality_report(actor, path):
             counts += np.bincount(a, minlength=W.N_ACTIONS)
         pct = 100 * counts / counts.sum()
         lines.append(f"| {name} | " + " | ".join(f"{p:.0f}" for p in pct) + " |")
+        rows.append({"name": name, "traits": traits, "pct": [round(float(p), 1) for p in pct]})
+    write_status(personalities={"actions": W.ACTIONS, "rows": rows})
     text = "\n".join(lines) + "\n"
     with open(path, "w") as f:
         f.write(text)
@@ -220,8 +243,11 @@ def personality_report(actor, path):
 
 if __name__ == "__main__":
     os.makedirs(OUT, exist_ok=True)
+    write_status(state="training")
     actor = train()
+    write_status(state="testing")
     export_header(actor, os.path.join(ROOT, "PipAI", "pip_brain.h"))
     record_trajectory(actor, os.path.join(OUT, "trajectory.txt"))
     personality_report(actor, os.path.join(OUT, "report.md"))
     torch.save(actor.state_dict(), os.path.join(OUT, "actor.pt"))
+    write_status(state="trained")

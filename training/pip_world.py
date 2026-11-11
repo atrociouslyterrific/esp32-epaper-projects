@@ -172,7 +172,7 @@ def reward(st, tr, a):
           + w_comfort * (1 - st.comfort) ** 2 + w_social * (1 - st.social) ** 2)
     # Personality: each trait makes its favourite activity enjoyable in itself,
     # and a LOW trait makes that activity unpleasant (a lazy Pip hates exploring...).
-    like = 0.16
+    like = 0.3
     r += like * (curious - 0.5) * (a == EXPLORE)
     r += like * (playful - 0.5) * (a == PLAY)
     r += like * (lazy - 0.5) * (a == NAP)

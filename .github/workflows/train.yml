@@ -32,13 +32,56 @@ jobs:
       - name: Install PyTorch (CPU) and numpy
         run: pip install numpy torch --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
 
-      - name: Train
-        run: python training/train.py
+      - name: Train (live progress goes to the status website)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          chmod +x training/push_status.sh
+          python training/train.py &
+          TRAIN_PID=$!
+          while kill -0 $TRAIN_PID 2>/dev/null; do
+            sleep 20
+            training/push_status.sh || true
+          done
+          wait $TRAIN_PID
 
       - name: Check the C brain + world match Python
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           gcc -O2 -I PipAI training/test_world.c -lm -o test_world
-          ./test_world training/out/trajectory.txt
+          set +e
+          ./test_world training/out/trajectory.txt | tee test.txt
+          result=${PIPESTATUS[0]}
+          set -e
+          python - "$result" <<'EOF'
+          import json, sys
+          p = "training/out/status.json"
+          s = json.load(open(p))
+          s["c_test"] = "pass" if sys.argv[1] == "0" else "fail"
+          s["c_test_detail"] = open("test.txt").read().strip()
+          s["state"] = "done" if sys.argv[1] == "0" else "failed"
+          json.dump(s, open(p, "w"))
+          EOF
+          training/push_status.sh
+          exit $result
+
+      - name: Tell the status website if training crashed
+        if: failure()
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'EOF'
+          import json, os
+          p = "training/out/status.json"
+          s = json.load(open(p)) if os.path.exists(p) else {}
+          if s.get("state") not in ("done",):
+              s["state"] = "failed"
+          os.makedirs("training/out", exist_ok=True)
+          json.dump(s, open(p, "w"))
+          EOF
+          bash training/push_status.sh || true
 
       - name: Personality report
         run: cat training/out/report.md >> "$GITHUB_STEP_SUMMARY"

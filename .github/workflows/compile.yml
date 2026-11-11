@@ -2,6 +2,7 @@ name: Build sketches
 
 on:
   push:
+    branches-ignore: [status]
   pull_request:
   workflow_dispatch:
   workflow_run:  # rebuild after a new brain is trained
