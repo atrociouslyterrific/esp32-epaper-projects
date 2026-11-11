@@ -7,6 +7,7 @@ GitHub compiles every sketch on each push (see the **Actions** tab), so errors s
 ## Sketches
 
 - **EpaperHello**: shows "Hello!" plus the temperature and humidity from the onboard sensor, updating every 30 seconds.
+- **EpaperPet**: a digital pet named Pip. BOOT moves between FEED / PLAY / SLEEP, PWR picks one. Keep its food, fun and energy bars up; its stats are saved when unplugged.
 
 ## Arduino IDE settings
 
