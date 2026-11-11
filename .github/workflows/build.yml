@@ -23,6 +23,7 @@ jobs:
   build:
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
+    timeout-minutes: 30  # a normal build takes ~5 min; never sit for GitHub's 6-hour default
     strategy:
       fail-fast: false
       matrix:
@@ -71,6 +72,7 @@ jobs:
   publish:
     # Put the newest program files on the "latest" release page for easy download.
     needs: build
+    timeout-minutes: 10
     if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.event_name == 'workflow_run')
     runs-on: ubuntu-latest
     steps:

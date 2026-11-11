@@ -20,6 +20,9 @@ concurrency:
 
 jobs:
   train:
+    # Never react to the bot's own "Update Pip's trained brain" commit (that commit
+    # changes training/, so without this guard it could retrain itself forever).
+    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -105,7 +108,7 @@ jobs:
           git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
           git add PipAI/pip_brain.h PipAI/pip_voice.h training/personality_report.md
           git diff --cached --quiet && exit 0
-          git commit -m "Update Pip's trained brain"
+          git commit -m "Update Pip's trained brain [skip ci]"
           # Other commits may have landed while training ran: rebase and retry.
           for i in 1 2 3 4 5; do
             git pull --rebase --autostash -X theirs origin main && git push && exit 0
