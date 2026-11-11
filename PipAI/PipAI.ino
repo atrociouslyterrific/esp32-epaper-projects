@@ -7,7 +7,10 @@
 // random personality (curious, playful, lazy, brave, affectionate) that changes
 // how it behaves. Everything runs on the board; no internet AI, no API keys.
 //
-// Buttons: tap BOOT or PWR to pet Pip. Hold BOOT 5 s to forget Wi-Fi.
+// On screen Pip lives in a little room: it walks to its bed to nap, to its bowl
+// to eat, into its box to hide, wanders when exploring and jumps when it plays.
+//
+// Buttons: tap BOOT or PWR to pet Pip (it hops). Hold BOOT 5 s to forget Wi-Fi.
 // Phone: join "Pip-Setup" Wi-Fi the first time, then open http://pip.local
 //
 // Files: pip_world.h = Pip's world rules, pip_brain.h = the trained network
@@ -224,6 +227,7 @@ void think() {
   Serial.printf("[%02d:%02d] %.1fC %.0f%% bat %.2f | food %.2f energy %.2f fun %.2f comfort %.2f social %.2f -> %s (%.0f%%) \"%s\"\n",
                 hr, mn, senses.tempC, senses.humidity, senses.battery, pip.food, pip.energy, pip.fun, pip.comfort,
                 pip.social, PIP_ACTION_NAMES[action], actionProbs[action] * 100, reason);
+  startAction(action);
   needRedraw = true;
 }
 
@@ -271,7 +275,28 @@ String personalityWords() {
   return s;
 }
 
-// ================================================================ drawing
+// ================================================================ drawing + movement
+// Pip lives in a little room: a bed (left), a food bowl and a cardboard box (right),
+// and a window that shows the sun or the moon. Pip walks to the right place for
+// each action and jumps when it plays or gets petted.
+
+const int FLOOR_Y = 106, PIP_R = 17;
+const int BED_X = 28, BOWL_X = 140, BOX_X = 181;
+const unsigned long FRAME_MS = 250;     // pause between animation frames (plus screen time)
+const int FULL_REFRESH_EVERY = 60;      // a flashing full refresh now and then clears ghosting
+
+enum AnimMode { AN_REST, AN_WALK, AN_PERFORM };
+AnimMode animMode = AN_REST;
+int pipX = 100, pipJump = 0, facing = 1, legPhase = 0, targetX = 100;
+int performStep = 0, exploreHops = 0;
+const int *jumpSeq = nullptr;
+int jumpLen = 0;
+unsigned long nextFrameAt = 0, nextAmbientAt = 0;
+
+const int JUMP_PLAY[] = {-10, -20, -10, 0, -10, -20, -10, 0};
+const int JUMP_HOP[] = {-9, 0};
+const int JUMP_CALL[] = {-7, 0, -7, 0};
+const int BOB_SING[] = {-3, 0, -3, 0};
 
 void drawArc(int cx, int cy, int halfWidth, int curve, int thick) {
   for (int t = 0; t < thick; t++) {
@@ -286,98 +311,9 @@ void drawArc(int cx, int cy, int halfWidth, int curve, int thick) {
 }
 
 void drawNote(int x, int y) {
-  display.fillCircle(x, y, 3, GxEPD_BLACK);
-  display.drawLine(x + 3, y, x + 3, y - 12, GxEPD_BLACK);
-  display.drawLine(x + 3, y - 12, x + 8, y - 9, GxEPD_BLACK);
-}
-
-void drawPip(int cx, int cy, int a, bool sad) {
-  const int r = 28;
-  bool hiding = a == A_HIDE;
-  int shake = (a == A_WARM_UP) ? 2 : 0;
-  cx += shake;
-
-  // feet, body, sprout
-  display.fillRoundRect(cx - 20, cy + r - 5, 13, 10, 4, GxEPD_BLACK);
-  display.fillRoundRect(cx + 7, cy + r - 5, 13, 10, 4, GxEPD_BLACK);
-  display.fillCircle(cx, cy, r, GxEPD_BLACK);
-  display.fillCircle(cx, cy, r - 3, GxEPD_WHITE);
-  display.drawLine(cx, cy - r, cx + 4, cy - r - 10, GxEPD_BLACK);
-  display.drawLine(cx + 1, cy - r, cx + 5, cy - r - 10, GxEPD_BLACK);
-  display.fillCircle(cx + 6, cy - r - 12, 4, GxEPD_BLACK);
-
-  int ey = cy - 5, el = cx - 10, er = cx + 10;
-  switch (a) {
-    case A_NAP:
-      drawArc(el, ey, 5, 3, 2); drawArc(er, ey, 5, 3, 2);
-      display.fillCircle(cx, cy + 12, 2, GxEPD_BLACK);
-      display.setFont(); display.setTextColor(GxEPD_BLACK);
-      display.setTextSize(1); display.setCursor(cx + r + 2, cy - r + 4); display.print("z");
-      display.setTextSize(2); display.setCursor(cx + r + 8, cy - r - 12); display.print("Z");
-      break;
-    case A_EAT:
-      display.fillCircle(el, ey, 4, GxEPD_BLACK); display.fillCircle(er, ey, 4, GxEPD_BLACK);
-      display.fillCircle(cx, cy + 11, 6, GxEPD_BLACK);  // open mouth
-      display.fillCircle(cx + r + 10, cy + 8, 7, GxEPD_BLACK);  // a little berry
-      display.drawLine(cx + r + 10, cy + 1, cx + r + 13, cy - 4, GxEPD_BLACK);
-      break;
-    case A_EXPLORE:
-      display.fillCircle(el, ey, 5, GxEPD_BLACK); display.fillCircle(er, ey, 5, GxEPD_BLACK);
-      display.fillCircle(el + 2, ey, 2, GxEPD_WHITE); display.fillCircle(er + 2, ey, 2, GxEPD_WHITE);
-      drawArc(cx + 2, cy + 12, 6, 0, 2);
-      display.setFont(); display.setTextSize(2); display.setTextColor(GxEPD_BLACK);
-      display.setCursor(cx + r + 6, cy - 16); display.print("?");
-      break;
-    case A_PLAY:
-      drawArc(el, ey + 2, 5, -4, 2); drawArc(er, ey + 2, 5, -4, 2);  // ^ ^
-      drawArc(cx, cy + 8, 11, 7, 3);
-      display.drawCircle(cx + r + 12, cy + 18, 8, GxEPD_BLACK);  // ball
-      display.drawLine(cx + r + 4, cy + 18, cx + r + 20, cy + 18, GxEPD_BLACK);
-      break;
-    case A_SING:
-      drawArc(el, ey + 2, 5, -3, 2); drawArc(er, ey + 2, 5, -3, 2);
-      display.drawCircle(cx, cy + 12, 4, GxEPD_BLACK);
-      drawNote(cx + r + 6, cy - 4); drawNote(cx + r + 16, cy - 16);
-      break;
-    case A_WARM_UP:
-      display.fillCircle(el, ey, 4, GxEPD_BLACK); display.fillCircle(er, ey, 4, GxEPD_BLACK);
-      drawArc(cx, cy + 12, 8, 2, 2);
-      for (int i = 0; i < 3; i++) {  // shiver lines
-        display.drawLine(cx - r - 10, cy - 8 + i * 8, cx - r - 4, cy - 10 + i * 8, GxEPD_BLACK);
-        display.drawLine(cx + r + 4, cy - 10 + i * 8, cx + r + 10, cy - 8 + i * 8, GxEPD_BLACK);
-      }
-      break;
-    case A_COOL_DOWN:
-      display.fillCircle(el, ey, 4, GxEPD_BLACK); display.fillCircle(er, ey, 4, GxEPD_BLACK);
-      drawArc(cx, cy + 12, 8, -2, 2);
-      display.fillTriangle(cx + r - 4, cy - r + 2, cx + r - 8, cy - r + 10, cx + r, cy - r + 10, GxEPD_BLACK);
-      display.fillCircle(cx + r - 4, cy - r + 11, 4, GxEPD_BLACK);  // sweat drop
-      break;
-    case A_CALL:
-      display.fillCircle(el, ey, 5, GxEPD_BLACK); display.fillCircle(er, ey, 5, GxEPD_BLACK);
-      display.fillCircle(cx, cy + 12, 5, GxEPD_BLACK);
-      display.fillRoundRect(cx + r + 4, cy - r - 4, 16, 22, 4, GxEPD_BLACK);
-      display.setFont(); display.setTextSize(2); display.setTextColor(GxEPD_WHITE);
-      display.setCursor(cx + r + 7, cy - r); display.print("!");
-      break;
-    default:  // idle and hide (eyes still visible over the box)
-      display.fillCircle(el, ey, 5, GxEPD_BLACK); display.fillCircle(er, ey, 5, GxEPD_BLACK);
-      display.fillCircle(el + 2, ey - 2, 2, GxEPD_WHITE); display.fillCircle(er + 2, ey - 2, 2, GxEPD_WHITE);
-      if (!hiding) drawArc(cx, cy + 10, 9, sad ? -4 : 4, 3);
-  }
-
-  if (sad && a != A_NAP) {
-    display.drawLine(el - 6, ey - 11, el + 4, ey - 8, GxEPD_BLACK);
-    display.drawLine(er + 6, ey - 11, er - 4, ey - 8, GxEPD_BLACK);
-  }
-
-  if (hiding) {  // a cardboard box over the bottom half
-    display.fillRect(cx - r - 8, cy + 2, 2 * r + 16, r + 8, GxEPD_WHITE);
-    display.drawRect(cx - r - 8, cy + 2, 2 * r + 16, r + 8, GxEPD_BLACK);
-    display.drawRect(cx - r - 7, cy + 3, 2 * r + 14, r + 6, GxEPD_BLACK);
-    display.drawLine(cx - r - 8, cy + 2, cx - r - 16, cy - 6, GxEPD_BLACK);
-    display.drawLine(cx + r + 8, cy + 2, cx + r + 16, cy - 6, GxEPD_BLACK);
-  }
+  display.fillCircle(x, y, 2, GxEPD_BLACK);
+  display.drawLine(x + 2, y, x + 2, y - 8, GxEPD_BLACK);
+  display.drawLine(x + 2, y - 8, x + 6, y - 6, GxEPD_BLACK);
 }
 
 void printAt(const char *text, int x, int y, int size) {
@@ -395,33 +331,156 @@ void drawBar(int y, const char *label, float v) {
   display.fillRect(52, y + 2, (int)(142 * v), 4, GxEPD_BLACK);
 }
 
+void drawRoom() {
+  bool night = clockSet && (senses.hour >= 20 || senses.hour < 7);
+  // Window with the sun or moon (it knows the time from the clock chip)
+  display.drawRect(86, 18, 30, 24, GxEPD_BLACK);
+  display.drawLine(101, 18, 101, 41, GxEPD_BLACK);
+  display.drawLine(86, 30, 115, 30, GxEPD_BLACK);
+  if (night) {
+    display.fillCircle(94, 24, 4, GxEPD_BLACK);
+    display.fillCircle(96, 23, 4, GxEPD_WHITE);
+    display.drawPixel(109, 22, GxEPD_BLACK); display.drawPixel(107, 36, GxEPD_BLACK); display.drawPixel(92, 37, GxEPD_BLACK);
+  } else {
+    display.drawCircle(94, 24, 3, GxEPD_BLACK);
+    for (int i = 0; i < 8; i++) {
+      float a = i * PI / 4;
+      display.drawPixel(94 + (int)(6 * cosf(a)), 24 + (int)(6 * sinf(a)), GxEPD_BLACK);
+    }
+  }
+  // Floor
+  display.drawLine(0, FLOOR_Y, 199, FLOOR_Y, GxEPD_BLACK);
+  for (int x = 4; x < 200; x += 14) display.drawLine(x, FLOOR_Y + 3, x + 4, FLOOR_Y + 3, GxEPD_BLACK);
+  // Bed
+  display.fillRect(4, 80, 3, FLOOR_Y - 80, GxEPD_BLACK);
+  display.drawRect(4, 97, 48, 9, GxEPD_BLACK);
+  display.fillRoundRect(9, 90, 16, 8, 3, GxEPD_BLACK);
+  display.fillRoundRect(11, 92, 12, 4, 2, GxEPD_WHITE);
+  // Food bowl
+  display.fillRoundRect(BOWL_X - 10, 99, 20, 7, 3, GxEPD_BLACK);
+  display.fillCircle(BOWL_X - 5, 98, 2, GxEPD_BLACK);
+  display.fillCircle(BOWL_X + 1, 97, 2, GxEPD_BLACK);
+  display.fillCircle(BOWL_X + 6, 98, 2, GxEPD_BLACK);
+  // Cardboard box (back edges)
+  display.drawRect(BOX_X - 15, 84, 30, 22, GxEPD_BLACK);
+  display.drawLine(BOX_X - 15, 84, BOX_X - 21, 77, GxEPD_BLACK);
+  display.drawLine(BOX_X + 14, 84, BOX_X + 19, 77, GxEPD_BLACK);
+}
+
+void drawBoxFront(int cx, int cy) {
+  display.fillRect(BOX_X - 15, cy + 1, 30, FLOOR_Y - cy - 1, GxEPD_WHITE);
+  display.drawRect(BOX_X - 15, cy + 1, 30, FLOOR_Y - cy, GxEPD_BLACK);
+  display.drawRect(BOX_X - 14, cy + 2, 28, FLOOR_Y - cy - 2, GxEPD_BLACK);
+}
+
+void drawPip(int a, bool sad) {
+  const int r = PIP_R;
+  bool onBed = pipX < 52 && (a == A_NAP || a == A_WARM_UP) && animMode != AN_WALK;
+  int cx = pipX + ((a == A_WARM_UP && animMode != AN_WALK) ? (legPhase ? 1 : -1) : 0);
+  int cy = FLOOR_Y - 5 - r + pipJump - (onBed ? 9 : 0);
+  bool walk = animMode == AN_WALK;
+  int side = cx > 130 ? -1 : 1;  // which side extra bits (notes, "!") go on
+
+  // Feet: alternate while walking, tucked while in the air
+  int lift = pipJump < 0 ? 2 : 0;
+  display.fillRoundRect(cx - 11, cy + r - 3 - lift - (walk && legPhase ? 2 : 0), 8, 6, 2, GxEPD_BLACK);
+  display.fillRoundRect(cx + 3, cy + r - 3 - lift - (walk && !legPhase ? 2 : 0), 8, 6, 2, GxEPD_BLACK);
+  // Body and sprout (the sprout leans back when walking)
+  display.fillCircle(cx, cy, r, GxEPD_BLACK);
+  display.fillCircle(cx, cy, r - 2, GxEPD_WHITE);
+  int lean = walk ? -facing * 2 : 2;
+  display.drawLine(cx, cy - r, cx + lean, cy - r - 7, GxEPD_BLACK);
+  display.fillCircle(cx + lean + 1, cy - r - 9, 3, GxEPD_BLACK);
+
+  int ey = cy - 3, look = facing * 2;
+  int el = cx - 6 + look, er = cx + 6 + look;
+  if (walk || a == A_EXPLORE) {  // eyes look where Pip is going
+    display.fillCircle(el, ey, 3, GxEPD_BLACK); display.fillCircle(er, ey, 3, GxEPD_BLACK);
+    display.drawPixel(el + facing, ey - 1, GxEPD_WHITE); display.drawPixel(er + facing, ey - 1, GxEPD_WHITE);
+    drawArc(cx + look, cy + 7, 4, 2, 1);
+    if (a == A_EXPLORE && !walk) printAt("?", cx + side * (r + 3) - (side < 0 ? 6 : 0), cy - r - 4, 1);
+  } else switch (a) {
+    case A_NAP:
+      drawArc(el, ey, 3, 2, 1); drawArc(er, ey, 3, 2, 1);
+      display.fillCircle(cx + look, cy + 8, 1, GxEPD_BLACK);
+      printAt("z", cx + r + 1, cy - r + 2, 1);
+      printAt("Z", cx + r + 6, cy - r - 8, 1);
+      break;
+    case A_EAT:
+      display.fillCircle(el, ey, 3, GxEPD_BLACK); display.fillCircle(er, ey, 3, GxEPD_BLACK);
+      display.fillCircle(cx + look + facing * 2, cy + 7, 3, GxEPD_BLACK);
+      break;
+    case A_PLAY:
+      drawArc(el, ey + 1, 3, -3, 1); drawArc(er, ey + 1, 3, -3, 1);
+      drawArc(cx + look, cy + 5, 7, 4, 2);
+      break;
+    case A_SING:
+      drawArc(el, ey + 1, 3, -2, 1); drawArc(er, ey + 1, 3, -2, 1);
+      display.drawCircle(cx + look, cy + 8, 2, GxEPD_BLACK);
+      drawNote(cx + side * (r + 4) - (side < 0 ? 6 : 0), cy - 4 - (pipJump ? 3 : 0));
+      drawNote(cx + side * (r + 11) - (side < 0 ? 6 : 0), cy - 12 + (pipJump ? 3 : 0));
+      break;
+    case A_WARM_UP:
+      display.fillCircle(el, ey, 2, GxEPD_BLACK); display.fillCircle(er, ey, 2, GxEPD_BLACK);
+      drawArc(cx, cy + 8, 5, 1, 1);
+      for (int i = 0; i < 2; i++) {
+        display.drawLine(cx - r - 6, cy - 4 + i * 7, cx - r - 2, cy - 6 + i * 7, GxEPD_BLACK);
+        display.drawLine(cx + r + 2, cy - 6 + i * 7, cx + r + 6, cy - 4 + i * 7, GxEPD_BLACK);
+      }
+      if (onBed) {  // tucked under a blanket
+        display.fillRect(cx - r - 2, cy + 3, 2 * r + 4, r, GxEPD_WHITE);
+        display.drawRect(cx - r - 2, cy + 3, 2 * r + 4, r, GxEPD_BLACK);
+        for (int x = cx - r + 2; x < cx + r; x += 6) display.drawLine(x, cy + 5, x + 3, cy + 8, GxEPD_BLACK);
+      }
+      break;
+    case A_COOL_DOWN:
+      display.fillCircle(el, ey, 3, GxEPD_BLACK); display.fillCircle(er, ey, 3, GxEPD_BLACK);
+      drawArc(cx + look, cy + 8, 5, -1, 1);
+      display.fillTriangle(cx + r - 3, cy - r + 1, cx + r - 6, cy - r + 7, cx + r, cy - r + 7, GxEPD_BLACK);
+      display.fillCircle(cx + r - 3, cy - r + 8, 3, GxEPD_BLACK);
+      break;
+    case A_CALL: {
+      display.fillCircle(el, ey, 3, GxEPD_BLACK); display.fillCircle(er, ey, 3, GxEPD_BLACK);
+      display.fillCircle(cx + look, cy + 8, 3, GxEPD_BLACK);
+      int bx = cx + side * (r + 3) - (side < 0 ? 10 : 0);
+      display.fillRoundRect(bx, cy - r - 6, 10, 14, 3, GxEPD_BLACK);
+      display.setFont(); display.setTextSize(1); display.setTextColor(GxEPD_WHITE);
+      display.setCursor(bx + 3, cy - r - 2); display.print("!");
+      break;
+    }
+    default:  // idle and hide
+      display.fillCircle(el, ey, 3, GxEPD_BLACK); display.fillCircle(er, ey, 3, GxEPD_BLACK);
+      display.drawPixel(el + 1, ey - 1, GxEPD_WHITE); display.drawPixel(er + 1, ey - 1, GxEPD_WHITE);
+      if (a != A_HIDE) drawArc(cx + look, cy + 6, 6, sad ? -3 : 3, 2);
+  }
+  if (sad && a != A_NAP && !walk) {
+    display.drawLine(el - 4, ey - 7, el + 2, ey - 5, GxEPD_BLACK);
+    display.drawLine(er + 4, ey - 7, er - 2, ey - 5, GxEPD_BLACK);
+  }
+  if (a == A_PLAY && !walk) {  // the ball bounces opposite to Pip
+    int by = FLOOR_Y - 6 + (pipJump < 0 ? 0 : -14);
+    display.drawCircle(cx + side * (r + 12), by, 6, GxEPD_BLACK);
+    display.drawLine(cx + side * (r + 12) - 6, by, cx + side * (r + 12) + 6, by, GxEPD_BLACK);
+  }
+  if (a == A_HIDE && !walk && abs(pipX - BOX_X) < 6) drawBoxFront(cx, cy);
+}
+
 void drawScreen() {
   redrawCount++;
-  if (redrawCount % 20 == 1) display.setFullWindow();
+  if (redrawCount % FULL_REFRESH_EVERY == 1) display.setFullWindow();
   else display.setPartialWindow(0, 0, display.width(), display.height());
 
   bool sad = min(min(pip.food, pip.energy), min(pip.fun, min(pip.comfort, pip.social))) < 0.25f;
-  char header[40], right[24], label[24];
+  char header[40], right[24], label[24], line1[34];
   String words = personalityWords();
   snprintf(header, sizeof(header), "%s: %s", PET_NAME, words.c_str());
   int hr = (int)senses.hour, mn = (int)((senses.hour - hr) * 60);
   if (clockSet) snprintf(right, sizeof(right), "%.0fC %02d:%02d", senses.tempC, hr, mn);
   else snprintf(right, sizeof(right), "%.0fC", senses.tempC);
-  snprintf(label, sizeof(label), "%s", PIP_ACTION_NAMES[action]);
+  if (animMode == AN_WALK) snprintf(label, sizeof(label), "%s", "WALKING");
+  else snprintf(label, sizeof(label), "%s", PIP_ACTION_NAMES[action]);
   for (char *p = label; *p; p++) *p = (*p == '_') ? ' ' : toupper(*p);
-
-  // Reason text wrapped onto up to 2 lines of 32 characters
-  char line1[34] = "", line2[34] = "";
-  int len = strlen(reason);
-  if (len <= 32) {
-    snprintf(line1, sizeof(line1), "%s", reason);
-  } else {
-    int cut = 32;
-    while (cut > 0 && reason[cut] != ' ') cut--;
-    if (cut == 0) cut = 32;
-    snprintf(line1, sizeof(line1), "%.*s", cut, reason);
-    snprintf(line2, sizeof(line2), "%.32s", reason + cut + (reason[cut] == ' ' ? 1 : 0));
-  }
+  snprintf(line1, sizeof(line1), "%.32s", reason);
 
   display.firstPage();
   do {
@@ -429,17 +488,129 @@ void drawScreen() {
     printAt(header, 2, 2, 1);
     printAt(right, 198 - (int)strlen(right) * 6, 2, 1);
     display.drawLine(0, 12, 199, 12, GxEPD_BLACK);
-    drawPip(80, 62, action, sad);
-    printCentered(label, 106, 2);
-    printCentered(line1, 126, 1);
-    printCentered(line2, 136, 1);
-    drawBar(150, "FOOD", pip.food);
-    drawBar(160, "ENERGY", pip.energy);
-    drawBar(170, "FUN", pip.fun);
-    drawBar(180, "COMFY", pip.comfort);
-    drawBar(190, "LOVE", pip.social);
+    drawRoom();
+    drawPip(action, sad);
+    printCentered(label, 111, 2);
+    printCentered(line1, 129, 1);
+    drawBar(141, "FOOD", pip.food);
+    drawBar(151, "ENERGY", pip.energy);
+    drawBar(161, "FUN", pip.fun);
+    drawBar(171, "COMFY", pip.comfort);
+    drawBar(181, "LOVE", pip.social);
   } while (display.nextPage());
   display.hibernate();
+}
+
+int randomX(int lo, int hi) { return lo + (int)(esp_random() % (uint32_t)(hi - lo + 1)); }
+
+int targetFor(int a) {
+  switch (a) {
+    case A_NAP: case A_WARM_UP: return BED_X;
+    case A_EAT: return BOWL_X - 26;
+    case A_HIDE: return BOX_X;
+    case A_COOL_DOWN: return 70;
+    case A_SING: case A_CALL: return 100;
+    case A_PLAY: return randomX(60, 130);
+    case A_EXPLORE: return randomX(20, 170);
+    default: return pipX;
+  }
+}
+
+void beginPerform() {
+  animMode = AN_PERFORM;
+  performStep = 0;
+  jumpSeq = nullptr; jumpLen = 0;
+  if (action == A_PLAY) { jumpSeq = JUMP_PLAY; jumpLen = 8; }
+  else if (action == A_CALL) { jumpSeq = JUMP_CALL; jumpLen = 4; }
+  else if (action == A_SING) { jumpSeq = BOB_SING; jumpLen = 4; }
+  else if (action == A_EAT) facing = 1;  // face the bowl
+}
+
+// Called by think(): walk to where this action happens, then do it.
+void startAction(int a) {
+  exploreHops = (a == A_EXPLORE) ? 2 : 0;
+  targetX = targetFor(a);
+  if (abs(targetX - pipX) > 4) animMode = AN_WALK;
+  else beginPerform();
+  nextFrameAt = millis();
+}
+
+// A happy little hop (when petted, or just because).
+void startHop() {
+  animMode = AN_PERFORM;
+  performStep = 0;
+  jumpSeq = JUMP_HOP; jumpLen = 2;
+  nextFrameAt = millis();
+}
+
+void restNow() {
+  animMode = AN_REST;
+  pipJump = 0;
+  jumpSeq = nullptr;
+  bool still = action == A_NAP || action == A_HIDE || action == A_WARM_UP;
+  nextAmbientAt = millis() + (still ? 120000UL : 20000UL + esp_random() % 25000UL);
+}
+
+// One animation frame. Returns true if the screen needs redrawing.
+bool animFrame() {
+  if (animMode == AN_WALK) {
+    int dx = targetX - pipX;
+    int step = min(12, abs(dx));
+    facing = dx > 0 ? 1 : -1;
+    pipX += facing * step;
+    legPhase ^= 1;
+    pipJump = 0;
+    if (abs(targetX - pipX) <= 2) {
+      pipX = targetX;
+      if (exploreHops > 0) {  // explorers check out a few spots
+        exploreHops--;
+        targetX = randomX(20, 170);
+      } else {
+        beginPerform();
+      }
+    }
+    return true;
+  }
+  if (animMode == AN_PERFORM) {
+    if (jumpSeq && performStep < jumpLen) {
+      pipJump = jumpSeq[performStep++];
+      if (action == A_PLAY && pipJump < -15) facing = -facing;  // spins in the air
+      return true;
+    }
+    if (action == A_WARM_UP && performStep < 3) { performStep++; legPhase ^= 1; return true; }  // shiver
+    bool drawn = performStep == 0;  // actions without moves get one frame to show their pose
+    restNow();
+    return drawn;
+  }
+  return false;
+}
+
+// Little things Pip does on its own between thoughts.
+void ambient() {
+  if (millis() < nextAmbientAt) return;
+  bool still = action == A_NAP || action == A_HIDE || action == A_WARM_UP;
+  if (still) { nextAmbientAt = millis() + 120000UL; return; }
+  uint32_t r = esp_random() % 3;
+  if (r == 0) {
+    startHop();
+  } else if (r == 1) {
+    facing = -facing;
+    needRedraw = true;
+    restNow();
+  } else {
+    targetX = constrain(pipX + (int)(esp_random() % 60) - 30, 16, 184);
+    exploreHops = 0;
+    animMode = AN_WALK;
+    nextFrameAt = millis();
+  }
+}
+
+// Run from loop(): advance the animation when it's time.
+void animTick() {
+  if (animMode == AN_REST) { ambient(); return; }
+  if (millis() < nextFrameAt) return;
+  if (animFrame()) needRedraw = true;
+  nextFrameAt = millis() + FRAME_MS;
 }
 
 // ================================================================ phone page
@@ -553,6 +724,7 @@ void sendState() {
 void handlePet() {
   touchedPending = true;  // Pip feels it on its next thought
   snprintf(reason, sizeof(reason), "Ooh, pats! <3");
+  startHop();
   needRedraw = true;
   sendState();
 }
@@ -694,6 +866,7 @@ void checkButtons() {
   if (petted) {
     touchedPending = true;
     snprintf(reason, sizeof(reason), "Ooh, pats! <3");
+    startHop();
     needRedraw = true;
   }
 }
@@ -737,6 +910,7 @@ void loop() {
     lastThink = millis();
     think();
   }
+  animTick();
   if (needRedraw) {
     needRedraw = false;
     drawScreen();
