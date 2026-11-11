@@ -116,6 +116,19 @@ h3 { font: 600 14px var(--f-body); margin: 16px 0 8px; }
 .mood ul { margin: 6px 0 0; padding: 0; list-style: none; display: grid; gap: 4px; }
 .mood li { font: 13px var(--f-mono); overflow-wrap: anywhere; }
 .mood li::before { content: "“"; color: var(--muted); } .mood li::after { content: "”"; color: var(--muted); }
+.trytalk { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.trytalk select, .trytalk input[type=range] { font: 14px var(--f-body); }
+.trytalk select { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--ink); }
+.go { font: 600 14px var(--f-body); padding: 8px 14px; border-radius: 8px; border: 1px solid var(--accent); background: var(--accent); color: var(--card); cursor: pointer; }
+.go:disabled { opacity: .5; cursor: default; }
+.said { font: 400 22px/1.3 var(--f-display); min-height: 1.4em; margin: 12px 0 4px; overflow-wrap: anywhere; }
+.said .cur { border-right: 2px solid var(--accent); }
+.cands { display: grid; gap: 4px; max-width: 360px; }
+.cands .row { display: grid; grid-template-columns: 28px 1fr 44px; gap: 8px; align-items: center; font: 12px var(--f-mono); }
+.cands .bar { height: 8px; background: var(--accent-soft); border-radius: 3px; overflow: hidden; }
+.cands .bar span { display: block; height: 100%; background: var(--accent); }
+.cands .row.pick { color: var(--accent); font-weight: 600; }
+.gates { display: flex; gap: 6px; }
 .pos { color: var(--accent); font-weight: 600; } .neg { color: var(--neg); font-weight: 600; }
 .act-big { font: 400 26px/1.1 var(--f-display); text-transform: lowercase; }
 .gallery { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; margin-top: 14px; }
@@ -227,6 +240,29 @@ h3 { font: 600 14px var(--f-body); margin: 16px 0 8px; }
       <div class="wcard"><h3>All 4,522 numbers</h3><svg id="w-hist" class="chart" viewBox="0 0 360 200" role="img" aria-label="Histogram of all weights"></svg></div>
     </div>
     <div class="tip" id="wtip" hidden></div>
+  </section>
+
+  <section aria-labelledby="vw-h">
+    <h2 id="vw-h">Pip's voice, number by number</h2>
+    <div class="wmeta" id="vmeta">The voice model's weights appear here once it has been trained and saved.</div>
+    <h3>Make Pip talk</h3>
+    <div class="trytalk">
+      <label for="vmood">Mood</label>
+      <select id="vmood"></select>
+      <label for="vtemp">Wildness <span id="vtemp-val" class="mono">0.75</span></label>
+      <input id="vtemp" type="range" min="0" max="1.5" step="0.05" value="0.75">
+      <button type="button" id="vgo" class="go" disabled>Write a sentence</button>
+    </div>
+    <div class="said" id="vsaid" aria-live="polite"></div>
+    <div class="cands" id="vcands"></div>
+    <p class="note">This runs Pip's real voice model in your browser with the same numbers as the board. It writes one letter at a time: the bars show the letters it was choosing between for the last letter. "Wildness" is the temperature. 0 always picks the most likely letter; higher values take more chances. The board uses 0.75.</p>
+    <div class="wgrid">
+      <div class="wcard"><h3>Letters → memory</h3><div class="scroll"><canvas id="v-ih" class="heat"></canvas></div></div>
+      <div class="wcard"><h3>Memory → next letter</h3><div class="scroll"><canvas id="v-o" class="heat"></canvas></div></div>
+      <div class="wcard"><h3>Memory → memory (reset · update · new)</h3><div class="scroll gates"><canvas id="v-hr" class="heat"></canvas><canvas id="v-hz" class="heat"></canvas><canvas id="v-hn" class="heat"></canvas></div></div>
+      <div class="wcard"><h3>All voice numbers</h3><svg id="v-hist" class="chart" viewBox="0 0 360 200" role="img" aria-label="Histogram of all voice model weights"></svg></div>
+    </div>
+    <p class="note">Rows marked with letters belong to that letter: in "Letters → memory", each row is how one letter changes Pip's memory (its 96 memory cells × 3 gates). In "Memory → next letter", each row is how strongly the memory votes for that letter coming next. Hover for exact values.</p>
   </section>
 
   <section aria-labelledby="pers-h">
@@ -783,7 +819,100 @@ function renderTalk() {
   Object.values(v.samples).forEach((list, i) => boxes[i].querySelectorAll("li").forEach((li, j) => li.textContent = list[j] || "(nothing)"));
 }
 
-function render() { renderTalk(); renderProgress(); renderChart(); renderMix(); renderNet(); renderWeights(); renderRadars(); renderPersonalities(); renderPipeline(); renderRuns(); }
+// ------------------------------------------------------------ the voice model's weights + live demo
+let voice = null, voiceFetchedAt = 0, voiceBusy = false;
+function parseVoice(text) {
+  const arr = n => { const m = text.match(new RegExp(`PV_${n}\\[\\d+\\] = \\{([^}]*)\\}`)); return m ? Float32Array.from(m[1].split(",").map(parseFloat)) : null; };
+  const vm = text.match(/PV_VOCAB\[PV_V \+ 1\] = "((?:[^"\\]|\\.)*)"/);
+  const H = +(text.match(/#define PV_H (\d+)/) || [])[1];
+  if (!vm || !H) return null;
+  const vocab = vm[1].replace(/\\n/g, "\n").replace(/\\'/g, "'").replace(/\\\\/g, "\\").split("");
+  const v = { vocab, V: vocab.length, H, Wih: arr("WIH"), Whh: arr("WHH"), bih: arr("BIH"), bhh: arr("BHH"), Wo: arr("WO"), bo: arr("BO") };
+  return [v.Wih, v.Whh, v.bih, v.bhh, v.Wo, v.bo].every(Boolean) ? v : null;
+}
+async function loadVoice() {
+  if (voice && Date.now() - voiceFetchedAt < 300000) return;
+  try {
+    const r = await fetch(`https://raw.githubusercontent.com/${REPO}/main/PipAI/pip_voice.h?t=${Date.now()}`, { cache: "no-store" });
+    if (r.ok) { const v = parseVoice(await r.text()); if (v) { voice = v; voiceFetchedAt = Date.now(); } }
+  } catch (e) { /* try again next time */ }
+}
+// Same maths as pv_step() / pv_logits() in pip_voice.h
+const sig = x => 1 / (1 + Math.exp(-x));
+function vStep(h, tok) {
+  const { H, V, Wih, Whh, bih, bhh } = voice, hn = new Float32Array(H);
+  for (let j = 0; j < H; j++) {
+    let hr = bhh[j], hz = bhh[H + j], hh = bhh[2 * H + j];
+    for (let k = 0; k < H; k++) { hr += Whh[j * H + k] * h[k]; hz += Whh[(H + j) * H + k] * h[k]; hh += Whh[(2 * H + j) * H + k] * h[k]; }
+    const r = sig(Wih[j * V + tok] + bih[j] + hr), z = sig(Wih[(H + j) * V + tok] + bih[H + j] + hz);
+    const n = Math.tanh(Wih[(2 * H + j) * V + tok] + bih[2 * H + j] + r * hh);
+    hn[j] = (1 - z) * n + z * h[j];
+  }
+  return hn;
+}
+function vLogits(h) {
+  const { H, V, Wo, bo } = voice, out = new Float32Array(V);
+  for (let v = 0; v < V; v++) { let s = bo[v]; for (let k = 0; k < H; k++) s += Wo[v * H + k] * h[k]; out[v] = s; }
+  return out;
+}
+const showChar = c => c === "\n" ? "⏎" : c === " " ? "␣" : c;
+async function writeSentence() {
+  if (!voice || voiceBusy) return;
+  voiceBusy = true; $("vgo").disabled = true;
+  const mood = $("vmood").value, temp = +$("vtemp").value, said = $("vsaid"), cands = $("vcands");
+  let h = new Float32Array(voice.H); h = vStep(h, voice.vocab.indexOf(mood)); h = vStep(h, voice.vocab.indexOf(">"));
+  let text = "";
+  for (let n = 0; n < 31; n++) {
+    const lg = vLogits(h);
+    const mx = Math.max(...lg), p = Array.from(lg, l => Math.exp((l - mx) / Math.max(temp, 1e-3)));
+    const sum = p.reduce((a, b) => a + b, 0); p.forEach((_, i) => p[i] /= sum);
+    let k = 0;
+    if (temp <= 0) { k = lg.indexOf(mx); } else { let r = Math.random(), acc = 0; for (k = 0; k < p.length - 1; k++) { acc += p[k]; if (r < acc) break; } }
+    const top = p.map((v, i) => [v, i]).sort((a, b) => b[0] - a[0]).slice(0, 5);
+    cands.innerHTML = top.map(([v, i]) => `<div class="row${i === k ? " pick" : ""}"><span>${showChar(voice.vocab[i])}</span><div class="bar"><span style="width:${(v * 100).toFixed(1)}%"></span></div><span>${(v * 100).toFixed(0)}%</span></div>`).join("");
+    if (voice.vocab[k] === "\n") break;
+    text += voice.vocab[k];
+    said.innerHTML = ""; said.append(text.charAt(0).toUpperCase() + text.slice(1)); const cur = document.createElement("span"); cur.className = "cur"; cur.textContent = " "; said.append(cur);
+    h = vStep(h, k);
+    await new Promise(r => setTimeout(r, reduceMotion() ? 0 : 90));
+  }
+  said.textContent = text ? text.charAt(0).toUpperCase() + text.slice(1) : "(Pip said nothing)";
+  voiceBusy = false; $("vgo").disabled = false;
+}
+function renderVoiceWeights() {
+  if (!voice) return;
+  const { H, V, vocab, Wih, Whh, bih, bhh, Wo, bo } = voice;
+  const all = [...Wih, ...Whh, ...bih, ...bhh, ...Wo, ...bo];
+  let absMax = 0, sum = 0; for (const x of all) { absMax = Math.max(absMax, Math.abs(x)); sum += x; }
+  $("vmeta").textContent = `The voice built into PipAI.bin (PipAI/pip_voice.h) · ${all.length.toLocaleString()} numbers · ${V} characters it knows · ${H} memory cells · largest ${absMax.toFixed(2)} · average ${(sum / all.length >= 0 ? "+" : "") + (sum / all.length).toFixed(3)}`;
+  const labels = vocab.map(c => c === "\n" ? "end" : c === " " ? "space" : c === ">" ? ">" : /[A-Z]/.test(c) ? `mood ${c}` : c);
+  const rows = (flat, n, m, transpose) => transpose
+    ? Array.from({ length: m }, (_, i) => Array.from({ length: n }, (_, j) => flat[j * m + i]))
+    : Array.from({ length: n }, (_, i) => Array.from(flat.slice(i * m, (i + 1) * m)));
+  drawHeat($("v-ih"), rows(Wih, 3 * H, V, true), { cell: 2, rowLabels: labels, labelW: 54, rowName: "letter", colName: "memory gate" });
+  $("v-ih")._hit.cell = 2;
+  drawHeat($("v-o"), rows(Wo, V, H), { cell: 3, rowLabels: labels, labelW: 54, rowName: "letter", colName: "memory cell" });
+  ["hr", "hz", "hn"].forEach((g, gi) => drawHeat($("v-" + g), rows(Whh.slice(gi * H * H, (gi + 1) * H * H), H, H), { cell: 2, rowName: "cell", colName: "cell" }));
+  // histogram
+  const bins = 40, counts = Array(bins).fill(0);
+  for (const v of all) counts[Math.min(bins - 1, Math.floor((v + absMax) / (2 * absMax) * bins))]++;
+  const cmax = Math.max(...counts), yt = niceTicks(0, cmax, 3), top = Math.max(cmax, yt.at(-1)), Wd = 360, Ht = 200, L = 40, B = 26, T = 8, bw = (Wd - L - 8) / bins;
+  let svg = yt.map(v => { const y = Ht - B - v / top * (Ht - B - T); return `<line x1="${L}" x2="${Wd - 8}" y1="${y}" y2="${y}" stroke="var(--line)"/><text x="${L - 4}" y="${y + 4}" text-anchor="end">${v}</text>`; }).join("");
+  counts.forEach((n, i) => { const hh = n / top * (Ht - B - T), mid = -absMax + (i + .5) * 2 * absMax / bins;
+    svg += `<rect x="${(L + i * bw + .5).toFixed(1)}" y="${(Ht - B - hh).toFixed(1)}" width="${(bw - 1).toFixed(1)}" height="${hh.toFixed(1)}" fill="${mid >= 0 ? "var(--accent)" : "var(--neg)"}"/>`; });
+  [-absMax, 0, absMax].forEach(v => svg += `<text x="${L + (v + absMax) / (2 * absMax) * (Wd - L - 8)}" y="${Ht - 8}" text-anchor="middle">${v.toFixed(1)}</text>`);
+  $("v-hist").innerHTML = svg;
+  if (!$("vmood").options.length) {
+    $("vmood").innerHTML = vocab.filter(c => /[A-Z]/.test(c)).map(c => `<option value="${c}">${MOOD_NAMES[c] || c}</option>`).join("");
+    $("vmood").value = "J";
+  }
+  $("vgo").disabled = voiceBusy;
+}
+$("vgo").addEventListener("click", writeSentence);
+$("vtemp").addEventListener("input", e => $("vtemp-val").textContent = (+e.target.value).toFixed(2));
+["v-ih", "v-o", "v-hr", "v-hz", "v-hn"].forEach(id => attachTip($(id)));
+
+function render() { renderVoiceWeights(); renderTalk(); renderProgress(); renderChart(); renderMix(); renderNet(); renderWeights(); renderRadars(); renderPersonalities(); renderPipeline(); renderRuns(); }
 buildGallery();
 document.fonts?.ready.then(buildGallery);
 loopPreview();
@@ -824,6 +953,7 @@ async function poll() {
   try { status = await fetchStatus(); } catch (e) { statusErr = `Couldn't load training progress (${e.message}).`; }
   await fetchApi();
   await loadBrain();
+  await loadVoice();
   render();
   wait = isBusy() ? 15 : 60;
   const parts = [`Checked ${new Date().toLocaleTimeString()} · next check in ${wait}s`];
