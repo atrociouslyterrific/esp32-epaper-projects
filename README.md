@@ -2,12 +2,20 @@
 
 Sketches for the Waveshare ESP32-S3-ePaper-1.54 (200×200 black/white e-paper).
 
-GitHub compiles every sketch on each push (see the **Actions** tab), so errors show up before you upload.
+GitHub compiles every sketch on each push (see the **Actions** tab) and puts the finished program files on the **latest** release page, so nothing needs compiling on your Mac.
+
+## Putting a program on the board (no Arduino IDE needed)
+
+1. Download `EpaperPet.bin` (or `EpaperHello.bin`) from the repo's **Releases → latest** page.
+2. In **Chrome**, open https://espressif.github.io/esptool-js/
+3. Plug in the board, click **Connect**, and pick the `usbmodem` port.
+4. Set **Flash Address** to `0x0`, choose the `.bin` file, click **Program**.
+5. When it says it's done, unplug and replug the board.
 
 ## Sketches
 
 - **EpaperHello**: shows "Hello!" plus the temperature and humidity from the onboard sensor, updating every 30 seconds.
-- **EpaperPet**: a digital pet named Pip. BOOT moves between FEED / PLAY / SLEEP, PWR picks one. Keep its food, fun and energy bars up; its stats are saved when unplugged. Add your Wi-Fi name/password at the top (locally only) to control it from your phone at http://pip.local.
+- **EpaperPet**: a digital pet named Pip. BOOT moves between FEED / PLAY / SLEEP, PWR picks one. Keep its food, fun and energy bars up; its stats are saved when unplugged. First start: join the **Pip-Setup** Wi-Fi with your phone and pick your home network. Then open http://pip.local on your phone to play. Hold BOOT 5 s to forget Wi-Fi.
 
 ## Arduino IDE settings
 

@@ -3,6 +3,8 @@
 // Controls:
 //   BOOT button -> move to the next menu option (FEED / PLAY / SLEEP)
 //   PWR  button -> do the selected option (any button wakes a sleeping pet)
+//   Hold BOOT 5 seconds -> forget the saved Wi-Fi and show the setup hotspot
+//   Phone -> http://pip.local (same Wi-Fi) for Feed/Play/Sleep buttons
 //
 // The pet gets hungry, bored and tired over time. Keep its bars up!
 // Its stats are saved, so it remembers everything after you unplug it.
@@ -15,14 +17,16 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <ESPmDNS.h>
+#include <DNSServer.h>
 #include <GxEPD2_BW.h>
 
-// ---- Wi-Fi (type your own details here in the Arduino IDE) ----
-// Your network must be 2.4 GHz (the ESP32 can't join 5 GHz-only networks).
-// Don't paste your real password back into GitHub.
-const char *WIFI_NAME     = "your-wifi-name";
-const char *WIFI_PASSWORD = "your-wifi-password";
-const char *WEB_NAME      = "pip";  // phone address becomes http://pip.local
+// ---- Wi-Fi ----
+// No password goes in this file. The first time Pip starts, it makes its own
+// Wi-Fi network called "Pip-Setup". Join it with your phone, pick your home
+// Wi-Fi, and type the password. Pip saves it on the board.
+// To change networks later: hold BOOT for 5 seconds.
+const char *SETUP_WIFI_NAME = "Pip-Setup";
+const char *WEB_NAME        = "pip";  // phone address becomes http://pip.local
 
 // ---- Board pins (from Waveshare's example code) ----
 const int EPD_PWR  = 6;   // screen power (LOW = on)
@@ -292,9 +296,41 @@ void tick() {
 
 // ---------- Phone web page ----------
 WebServer server(80);
+DNSServer dnsServer;
+Preferences wifiPrefs;
+String savedSsid, savedPass;
+bool setupMode = false;
+String networkOptions;  // <option> list of nearby networks for the setup page
 bool needRedraw = false;
 bool wifiWasConnected = false;
+unsigned long wifiStartedAt = 0;
 unsigned long lastWifiAttempt = 0;
+
+const char SETUP_HTML_TOP[] PROGMEM = R"rawliteral(<!doctype html>
+<html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pet Wi-Fi setup</title>
+<style>
+  body{font-family:-apple-system,system-ui,sans-serif;max-width:420px;margin:0 auto;padding:16px;background:#f4f1ea;color:#222}
+  h1{font-size:24px}
+  label{display:block;margin:14px 0 4px;font-weight:600}
+  select,input,button{width:100%;box-sizing:border-box;font-size:18px;padding:12px;border:2px solid #222;border-radius:10px;background:#fff}
+  button{margin-top:20px;background:#222;color:#fff}
+  p{color:#555}
+</style></head><body>
+<h1>Connect your pet to Wi-Fi</h1>
+<p>Pick your home network (2.4 GHz) and type its password. It's saved only on the board.</p>
+<form method="POST" action="/save">
+<label>Network</label>
+<select name="ssid">)rawliteral";
+
+const char SETUP_HTML_BOTTOM[] PROGMEM = R"rawliteral(</select>
+<label>Or type a hidden network name</label>
+<input name="other" placeholder="(leave blank to use the list)" autocapitalize="none">
+<label>Password</label>
+<input name="pass" type="password" autocomplete="off">
+<button type="submit">Save and connect</button>
+</form></body></html>)rawliteral";
 
 const char PAGE_HTML[] PROGMEM = R"rawliteral(<!doctype html>
 <html><head><meta charset="utf-8">
@@ -382,28 +418,129 @@ void handleAction() {
   sendState();
 }
 
+String htmlEscape(const String &s) {
+  String out;
+  for (char c : s) {
+    if (c == '&') out += "&amp;";
+    else if (c == '<') out += "&lt;";
+    else if (c == '>') out += "&gt;";
+    else if (c == '"') out += "&quot;";
+    else out += c;
+  }
+  return out;
+}
+
+// Make Pip's own "Pip-Setup" network so a phone can give it the Wi-Fi password.
+void startSetupMode() {
+  if (setupMode) return;
+  setupMode = true;
+  Serial.println("Starting Wi-Fi setup hotspot");
+
+  // List nearby networks for the setup page.
+  WiFi.mode(WIFI_AP_STA);
+  int n = WiFi.scanNetworks();
+  networkOptions = "";
+  for (int i = 0; i < n; i++) {
+    String name = WiFi.SSID(i);
+    if (name.length() == 0 || networkOptions.indexOf(">" + htmlEscape(name) + "<") >= 0) continue;
+    networkOptions += "<option value=\"" + htmlEscape(name) + "\">" + htmlEscape(name) + "</option>";
+  }
+
+  WiFi.softAP(SETUP_WIFI_NAME);
+  dnsServer.start(53, "*", WiFi.softAPIP());  // send every web address to Pip
+  snprintf(message, sizeof(message), "Join WiFi: %s", SETUP_WIFI_NAME);
+  needRedraw = true;
+}
+
+void handleRoot() {
+  if (setupMode) {
+    String page = FPSTR(SETUP_HTML_TOP);
+    page += networkOptions;
+    page += FPSTR(SETUP_HTML_BOTTOM);
+    server.send(200, "text/html", page);
+  } else {
+    server.send_P(200, "text/html", PAGE_HTML);
+  }
+}
+
+void handleSave() {
+  String ssid = server.arg("other");
+  ssid.trim();
+  if (ssid.length() == 0) ssid = server.arg("ssid");
+  wifiPrefs.putString("ssid", ssid);
+  wifiPrefs.putString("pass", server.arg("pass"));
+  server.send(200, "text/html",
+              "<meta name=viewport content='width=device-width'>"
+              "<body style='font-family:sans-serif;padding:20px'>"
+              "<h2>Saved!</h2><p>Pip is restarting and joining <b>" + htmlEscape(ssid) +
+              "</b>.</p><p>Switch your phone back to your home Wi-Fi, then open "
+              "<b>http://pip.local</b> (or the address shown on Pip's screen).</p></body>");
+  delay(1500);
+  ESP.restart();
+}
+
+// Captive portal: phones check a test web page when joining Wi-Fi.
+// Sending them to Pip makes the setup page pop up by itself.
+void handleNotFound() {
+  if (setupMode) {
+    server.sendHeader("Location", "http://" + WiFi.softAPIP().toString() + "/", true);
+    server.send(302, "text/plain", "");
+  } else {
+    server.send(404, "text/plain", "Not found");
+  }
+}
+
+void forgetWifi() {
+  wifiPrefs.clear();
+  snprintf(message, sizeof(message), "WiFi forgotten!");
+  drawScreen();
+  delay(1000);
+  ESP.restart();
+}
+
 void startWifi() {
-  if (strcmp(WIFI_NAME, "your-wifi-name") == 0) {
-    Serial.println("Wi-Fi not set up: edit WIFI_NAME and WIFI_PASSWORD at the top.");
+  wifiPrefs.begin("wifi", false);
+  savedSsid = wifiPrefs.getString("ssid", "");
+  savedPass = wifiPrefs.getString("pass", "");
+
+  server.on("/", handleRoot);
+  server.on("/state", sendState);
+  server.on("/do", handleAction);
+  server.on("/save", HTTP_POST, handleSave);
+  server.onNotFound(handleNotFound);
+  server.begin();
+
+  WiFi.setHostname(WEB_NAME);
+  if (savedSsid.length() == 0) {
+    startSetupMode();
     return;
   }
   WiFi.mode(WIFI_STA);
-  WiFi.setHostname(WEB_NAME);
-  WiFi.begin(WIFI_NAME, WIFI_PASSWORD);
-  lastWifiAttempt = millis();
-  Serial.printf("Connecting to Wi-Fi \"%s\"...\n", WIFI_NAME);
-
-  server.on("/", []() { server.send_P(200, "text/html", PAGE_HTML); });
-  server.on("/state", sendState);
-  server.on("/do", handleAction);
-  server.begin();
+  WiFi.begin(savedSsid.c_str(), savedPass.c_str());
+  wifiStartedAt = lastWifiAttempt = millis();
+  Serial.printf("Connecting to Wi-Fi \"%s\"...\n", savedSsid.c_str());
 }
 
 // Notice when Wi-Fi connects or drops, and retry if needed.
 void checkWifi() {
-  if (strcmp(WIFI_NAME, "your-wifi-name") == 0) return;
+  if (setupMode) dnsServer.processNextRequest();
+  if (savedSsid.length() == 0) return;
+
+  // Couldn't connect within 30 seconds of starting: open the setup hotspot too
+  // (Pip keeps trying the saved network in the background).
+  if (!setupMode && !wifiWasConnected && WiFi.status() != WL_CONNECTED &&
+      millis() - wifiStartedAt > 30000) {
+    startSetupMode();
+  }
+
   bool connected = WiFi.status() == WL_CONNECTED;
   if (connected && !wifiWasConnected) {
+    if (setupMode) {  // home Wi-Fi came back, so the setup hotspot isn't needed
+      dnsServer.stop();
+      WiFi.softAPdisconnect(true);
+      WiFi.mode(WIFI_STA);
+      setupMode = false;
+    }
     MDNS.begin(WEB_NAME);
     MDNS.addService("http", "tcp", 80);
     String ip = WiFi.localIP().toString();
@@ -414,7 +551,7 @@ void checkWifi() {
     Serial.println("Wi-Fi lost, reconnecting...");
     MDNS.end();
   }
-  if (!connected && millis() - lastWifiAttempt > 30000) {
+  if (!connected && !setupMode && millis() - lastWifiAttempt > 30000) {
     WiFi.reconnect();
     lastWifiAttempt = millis();
   }
@@ -458,11 +595,30 @@ void setup() {
 
 bool bootWasDown = true;  // start "down" so a held button at power-on is ignored
 bool pwrWasDown = true;
+unsigned long bootDownAt = 0;
+bool bootHoldUsed = true;   // ignore the first release if held at power-on
+
+// BOOT acts when you let go (so a 5-second hold can mean "forget Wi-Fi").
+bool bootTapped() {
+  bool down = digitalRead(BTN_BOOT) == LOW;
+  bool tapped = false;
+  if (down && !bootWasDown) {
+    bootDownAt = millis();
+    bootHoldUsed = false;
+  }
+  if (down && !bootHoldUsed && millis() - bootDownAt > 5000) {
+    bootHoldUsed = true;
+    forgetWifi();
+  }
+  if (!down && bootWasDown && !bootHoldUsed) tapped = true;
+  bootWasDown = down;
+  return tapped;
+}
 
 void loop() {
   bool changed = false;
 
-  if (pressed(BTN_BOOT, bootWasDown)) {
+  if (bootTapped()) {
     if (asleep) {
       asleep = false;
       snprintf(message, sizeof(message), "Huh? I'm awake!");
@@ -487,6 +643,7 @@ void loop() {
   if (millis() - lastTick >= TICK_MS) {
     lastTick += TICK_MS;
     tick();
+    if (setupMode) snprintf(message, sizeof(message), "Join WiFi: %s", SETUP_WIFI_NAME);
     frame++;
     changed = true;
   }
