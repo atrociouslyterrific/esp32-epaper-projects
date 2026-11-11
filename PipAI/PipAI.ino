@@ -841,6 +841,11 @@ void startWifi() {
   wifiPrefs.begin("wifi", false);
   savedSsid = wifiPrefs.getString("ssid", "");
   savedPass = wifiPrefs.getString("pass", "");
+
+  // Wi-Fi must be switched on BEFORE the web server starts, or the network
+  // system isn't ready yet and the board crashes and restarts in a loop.
+  WiFi.setHostname(WEB_NAME);
+  WiFi.mode(WIFI_STA);
   server.on("/", handleRoot);
   server.on("/state", sendState);
   server.on("/pet", handlePet);
@@ -848,9 +853,7 @@ void startWifi() {
   server.on("/save", HTTP_POST, handleSave);
   server.onNotFound(handleNotFound);
   server.begin();
-  WiFi.setHostname(WEB_NAME);
   if (savedSsid.length() == 0) { startSetupMode(); return; }
-  WiFi.mode(WIFI_STA);
   WiFi.begin(savedSsid.c_str(), savedPass.c_str());
   wifiStartedAt = lastWifiAttempt = millis();
 }
