@@ -129,6 +129,12 @@ def train():
 
         mix = np.bincount(acts.ravel(), minlength=W.N_ACTIONS) / acts.size
         STATUS["reward_history"].append(round(float(rews.mean()), 5))
+        if update % 10 == 0 or update == UPDATES - 1:  # weights for the status website, every 10 updates
+            r3 = lambda t: [[round(float(v), 3) for v in row] for row in t.detach().numpy()]
+            STATUS["weights"] = {"update": update + 1,
+                                 "W1": r3(actor.l1.weight), "b1": [round(float(v), 3) for v in actor.l1.bias.detach()],
+                                 "W2": r3(actor.l2.weight), "b2": [round(float(v), 3) for v in actor.l2.bias.detach()],
+                                 "W3": r3(actor.l3.weight), "b3": [round(float(v), 3) for v in actor.l3.bias.detach()]}
         write_status(state="training", update=update + 1, elapsed_s=round(time.time() - start),
                      action_mix=[round(float(m), 4) for m in mix])
         if update % 10 == 0 or update == UPDATES - 1:

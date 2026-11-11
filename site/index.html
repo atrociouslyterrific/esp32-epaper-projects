@@ -12,7 +12,7 @@
 :root {
   --paper: #ECEDE8; --card: #F7F8F4; --ink: #1C1F1D; --muted: #636A65; --line: #C9CCC4;
   --accent: #2F6F5E; --accent-soft: #D5E6DF;
-  --ok: #2E7D4F; --warn: #A86B12; --bad: #B3412F;
+  --ok: #2E7D4F; --warn: #A86B12; --bad: #B3412F; --neg: #C26A2E;
   --f-display: "Silkscreen", "Courier New", monospace;
   --f-body: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
   --f-mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
@@ -20,10 +20,10 @@
 }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
   --paper: #121513; --card: #1A1E1C; --ink: #E3E6E0; --muted: #959C96; --line: #2C322F;
-  --accent: #74C3AA; --accent-soft: #1F3A32; --ok: #5FBF85; --warn: #E0A84A; --bad: #E77A66; color-scheme: dark; } }
+  --accent: #74C3AA; --accent-soft: #1F3A32; --ok: #5FBF85; --warn: #E0A84A; --bad: #E77A66; --neg: #E8955A; color-scheme: dark; } }
 :root[data-theme="dark"] {
   --paper: #121513; --card: #1A1E1C; --ink: #E3E6E0; --muted: #959C96; --line: #2C322F;
-  --accent: #74C3AA; --accent-soft: #1F3A32; --ok: #5FBF85; --warn: #E0A84A; --bad: #E77A66; color-scheme: dark; }
+  --accent: #74C3AA; --accent-soft: #1F3A32; --ok: #5FBF85; --warn: #E0A84A; --bad: #E77A66; --neg: #E8955A; color-scheme: dark; }
 
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--paper); color: var(--ink); font: 15px/1.55 var(--f-body); }
@@ -92,8 +92,25 @@ td.cell { font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
   box-shadow: inset 0 0 0 2px #3A3E3B; }
 .bezel { background: #DADBD5; padding: 8px; border-radius: 4px; }
 #epd { display: block; width: 216px; height: 216px; max-width: 100%; image-rendering: pixelated; background: #E8E8E2; }
-.buttons { display: flex; justify-content: space-between; margin-top: 8px; font: 10px var(--f-mono); color: #9AA09B; }
-.buttons span::before { content: ""; display: inline-block; width: 14px; height: 6px; border-radius: 3px; background: #4A4F4B; margin-right: 6px; vertical-align: middle; }
+.buttons { display: flex; justify-content: space-between; margin-top: 8px; }
+.hwbtn { all: unset; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; font: 10px var(--f-mono); color: #9AA09B;
+  padding: 4px 2px; border-radius: 4px; user-select: none; -webkit-tap-highlight-color: transparent; }
+.hwbtn::before { content: ""; width: 18px; height: 8px; border-radius: 4px; background: #5A605B;
+  box-shadow: 0 2px 0 #1E211F; transition: transform .06s, box-shadow .06s; }
+.hwbtn:hover::before { background: #6A716B; }
+.hwbtn:active::before, .hwbtn.pressed::before { transform: translateY(2px); box-shadow: 0 0 0 #1E211F; }
+.hwbtn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+h3 { font: 600 14px var(--f-body); margin: 16px 0 8px; }
+.wmeta { font: 13px var(--f-mono); color: var(--muted); }
+.heat { display: block; image-rendering: pixelated; }
+.wgrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-top: 6px; }
+.wcard { min-width: 0; }
+.wcard h3 { margin-top: 6px; }
+@media (max-width: 620px) { .wgrid { grid-template-columns: 1fr; } }
+.tip { position: fixed; z-index: 20; pointer-events: none; background: var(--ink); color: var(--paper); font: 12px var(--f-mono);
+  padding: 6px 8px; border-radius: 6px; max-width: 260px; }
+.pos { color: var(--accent); font-weight: 600; } .neg { color: var(--neg); font-weight: 600; }
 .act-big { font: 400 26px/1.1 var(--f-display); text-transform: lowercase; }
 .gallery { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; margin-top: 14px; }
 .gallery button { all: unset; cursor: pointer; display: grid; gap: 4px; justify-items: center; font: 11px var(--f-mono); color: var(--muted); }
@@ -142,15 +159,18 @@ td.cell { font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
   <section aria-labelledby="live-h">
     <h2 id="live-h">Pip, as the current brain would act</h2>
     <div class="stagebox">
-      <div class="device" aria-hidden="true">
-        <div class="bezel"><canvas id="epd" width="200" height="200"></canvas></div>
-        <div class="buttons"><span>BOOT</span><span>PWR</span></div>
+      <div class="device">
+        <div class="bezel"><canvas id="epd" width="200" height="200" role="img" aria-label="Preview of Pip on the e-paper screen"></canvas></div>
+        <div class="buttons">
+          <button type="button" class="hwbtn" id="btn-boot" aria-label="Press BOOT to pet Pip">BOOT</button>
+          <button type="button" class="hwbtn" id="btn-pwr" aria-label="Press PWR to pet Pip">PWR</button>
+        </div>
       </div>
       <div class="livetext">
         <div class="act-big" id="pv-act">–</div>
         <p id="pv-why" class="muted">Pip acts out what the brain picks, as often as the brain picks it.</p>
         <div class="gallery" id="gallery" aria-label="Every action Pip can take"></div>
-        <p class="note">Pip is a squishy blob: it scoots to its bed to nap, its bowl to eat and its box to hide, and stretches and squashes as it jumps. The board does the same moves at e-paper speed (about 3 frames a second); here they're tweened smoothly. Click a small screen to make Pip do that action.</p>
+        <p class="note">Pip is a squishy blob: it scoots to its bed to nap, its bowl to eat and its box to hide, and stretches and squashes as it jumps. The board does the same moves at e-paper speed (about 3 frames a second); here they're tweened smoothly. Click a small screen to make Pip do that action, or press BOOT or PWR to pet Pip, like on the real board.</p>
       </div>
     </div>
   </section>
@@ -179,7 +199,22 @@ td.cell { font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
   <section aria-labelledby="net-h">
     <h2 id="net-h">Inside Pip's brain</h2>
     <div class="scroll"><svg class="chart net" id="net" viewBox="0 0 820 420" role="img" aria-label="Neural network diagram: 34 inputs, two hidden layers of 48, 10 actions"></svg></div>
-    <p class="note">Every sense and feeling on the left connects to every neuron in the next layer, 4,522 learned numbers in total. Training adjusts those numbers. On the right, each action's circle grows with how often the brain currently picks it.</p>
+    <p class="note">Every sense and feeling on the left connects to every neuron in the next layer, 4,522 learned numbers in total. Each line is one real weight: <span class="pos">teal</span> pushes the next neuron up, <span class="neg">orange</span> pushes it down, and stronger weights draw darker. On the right, each action's circle grows with how often the brain currently picks it.</p>
+  </section>
+
+  <section aria-labelledby="w-h">
+    <h2 id="w-h">Pip's brain, number by number</h2>
+    <div class="wmeta" id="wmeta">Loading weights…</div>
+    <h3>Which senses push Pip toward each action</h3>
+    <div class="scroll"><canvas id="w-influence" class="heat"></canvas></div>
+    <p class="note">A rough guide made by multiplying the three layers together, ignoring the bends (tanh) in between. A teal square means that input makes the action more likely; orange means less likely.</p>
+    <div class="wgrid">
+      <div class="wcard"><h3>Layer 1 · senses → 48 neurons</h3><div class="scroll"><canvas id="w-1" class="heat"></canvas></div></div>
+      <div class="wcard"><h3>Layer 2 · 48 → 48 neurons</h3><div class="scroll"><canvas id="w-2" class="heat"></canvas></div></div>
+      <div class="wcard"><h3>Layer 3 · 48 neurons → actions</h3><div class="scroll"><canvas id="w-3" class="heat"></canvas></div></div>
+      <div class="wcard"><h3>All 4,522 numbers</h3><svg id="w-hist" class="chart" viewBox="0 0 360 200" role="img" aria-label="Histogram of all weights"></svg></div>
+    </div>
+    <div class="tip" id="wtip" hidden></div>
   </section>
 
   <section aria-labelledby="pers-h">
@@ -464,6 +499,7 @@ function pickAction() {
   return ACTIONS[m.length - 1];
 }
 function startAction(a) {
+  pv.reason = "";
   pv.action = a; pv.hops = a === "explore" ? 2 : 0; pv.target = targetFor(a, pv.x);
   if (Math.abs(pv.target - pv.x) > 4) { pv.mode = "walk"; pv.phase = 0; } else beginPerform();
   const m = status?.action_mix, i = ACTIONS.indexOf(a);
@@ -535,12 +571,26 @@ function renderNet() {
   const ys = col => Array.from({ length: col.n }, (_, i) => T + (i + .5) * (Ht - T - B) / col.n);
   const pts = cols.map(ys);
   let out = "";
+  const mats = brain ? [brain.W1, brain.W2, brain.W3] : null;
   for (let k = 0; k < 3; k++) {
-    let d = ""; for (const y1 of pts[k]) for (const y2 of pts[k + 1]) d += `M${cols[k].x},${y1.toFixed(1)}L${cols[k + 1].x},${y2.toFixed(1)}`;
-    out += `<path d="${d}" stroke="var(--accent)" stroke-width=".35" opacity="${k === 2 ? .18 : .08}" fill="none"/>`;
+    if (!mats) {
+      let d = ""; for (const y1 of pts[k]) for (const y2 of pts[k + 1]) d += `M${cols[k].x},${y1.toFixed(1)}L${cols[k + 1].x},${y2.toFixed(1)}`;
+      out += `<path d="${d}" stroke="var(--accent)" stroke-width=".35" opacity=".08" fill="none"/>`;
+      continue;
+    }
+    // Group lines by sign and strength so thousands of weights stay fast to draw
+    const M = mats[k], max = Math.max(...M.flat().map(Math.abs)), buckets = {};
+    M.forEach((row, o) => row.forEach((v, i) => {
+      const s = Math.abs(v) / max; if (s < .18) return;
+      const key = (v >= 0 ? "p" : "n") + Math.min(4, Math.floor(s * 5));
+      buckets[key] = (buckets[key] || "") + `M${cols[k].x},${pts[k][i].toFixed(1)}L${cols[k + 1].x},${pts[k + 1][o].toFixed(1)}`;
+    }));
+    for (const [key, d] of Object.entries(buckets)) {
+      const lvl = +key[1];
+      out += `<path d="${d}" stroke="var(${key[0] === "p" ? "--accent" : "--neg"})" stroke-width="${(.4 + lvl * .25).toFixed(2)}" opacity="${(.12 + lvl * .17).toFixed(2)}" fill="none"/>`;
+    }
   }
   pts.slice(0, 3).forEach((col, k) => col.forEach(y => out += `<circle cx="${cols[k].x}" cy="${y}" r="${k ? 2.6 : 3}" fill="var(--card)" stroke="var(--ink)" stroke-width="1"/>`));
-  // input group labels with brackets
   let i0 = 0;
   for (const [name, n] of GROUPS) {
     const y1 = pts[0][i0] - 4, y2 = pts[0][i0 + n - 1] + 4, ym = (y1 + y2) / 2;
@@ -558,6 +608,110 @@ function renderNet() {
     out += `<text x="${cols[k].x}" y="${Ht - 1}" text-anchor="middle">${t}</text>`);
   svg.innerHTML = out;
 }
+
+// ------------------------------------------------------------ the real weights
+const INPUT_NAMES = ["food", "energy", "fun", "comfort", "love", "temperature", "humidity", "time (sin)", "time (cos)",
+  "sound", "battery", "charging", "your touch", "tilt: no sensor", "upright", "tilted", "upside down", "something changed",
+  "curious", "playful", "lazy", "brave", "affectionate",
+  ...ACTIONS.map(a => "last: " + a.replace("_", " ")), "repeating"];
+let brain = null, brainSource = "", headerFetchedAt = 0;
+
+function parseHeader(text) {
+  const get = n => { const m = text.match(new RegExp(`PIP_${n}\\[\\d+\\] = \\{([^}]*)\\}`)); return m ? m[1].split(",").map(v => parseFloat(v)) : null; };
+  const f = { W1: get("W1"), B1: get("B1"), W2: get("W2"), B2: get("B2"), W3: get("W3"), B3: get("B3") };
+  if (Object.values(f).some(v => !v)) return null;
+  const rows = (flat, n, m) => Array.from({ length: n }, (_, i) => flat.slice(i * m, (i + 1) * m));
+  return { W1: rows(f.W1, 48, 34), b1: f.B1, W2: rows(f.W2, 48, 48), b2: f.B2, W3: rows(f.W3, 10, 48), b3: f.B3 };
+}
+
+async function loadBrain() {
+  if (status?.weights) {
+    brain = status.weights;
+    brainSource = status.state === "training" ? `Live from training · update ${status.weights.update ?? status.update} of ${status.total_updates}` :
+      `From the latest training run · ${status.commit || ""}`;
+    return;
+  }
+  if (brain && Date.now() - headerFetchedAt < 300000) return;
+  try {
+    const r = await fetch(`https://raw.githubusercontent.com/${REPO}/main/PipAI/pip_brain.h?t=${Date.now()}`, { cache: "no-store" });
+    if (r.ok) { const b = parseHeader(await r.text()); if (b) { brain = b; brainSource = "The brain currently built into PipAI.bin (PipAI/pip_brain.h)"; headerFetchedAt = Date.now(); } }
+  } catch (e) { /* keep what we have */ }
+}
+
+const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+function hexToRgb(h) { h = h.replace("#", ""); if (h.length === 3) h = [...h].map(x => x + x).join(""); const n = parseInt(h, 16); return [n >> 16 & 255, n >> 8 & 255, n & 255]; }
+function weightColor(v, max, bg, pos, neg) {
+  const t = Math.min(1, Math.abs(v) / max) ** 0.75, c = v >= 0 ? pos : neg;
+  return `rgb(${bg.map((b, i) => Math.round(b + (c[i] - b) * t)).join(",")})`;
+}
+const matMul = (A, B) => A.map(row => B[0].map((_, j) => row.reduce((s, a, k) => s + a * B[k][j], 0)));
+
+// Draw a weight matrix as a grid of coloured squares with labels; returns hit-test info for tooltips.
+function drawHeat(canvas, M, opts) {
+  const { cell = 8, rowLabels = null, colLabels = null, labelW = 0, labelH = 0, rowName, colName } = opts;
+  const rowsN = M.length, colsN = M[0].length, dpr = window.devicePixelRatio || 1;
+  const W = labelW + colsN * cell + 2, H = labelH + rowsN * cell + 2;
+  canvas.width = W * dpr; canvas.height = H * dpr; canvas.style.width = W + "px"; canvas.style.height = H + "px";
+  const c = canvas.getContext("2d"); c.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const bg = hexToRgb(css("--card")), pos = hexToRgb(css("--accent")), neg = hexToRgb(css("--neg"));
+  const max = Math.max(1e-6, ...M.flat().map(Math.abs));
+  c.fillStyle = css("--card"); c.fillRect(0, 0, W, H);
+  M.forEach((row, i) => row.forEach((v, j) => { c.fillStyle = weightColor(v, max, bg, pos, neg); c.fillRect(labelW + j * cell, labelH + i * cell, cell - (cell > 6 ? 1 : 0), cell - (cell > 6 ? 1 : 0)); }));
+  c.fillStyle = css("--muted"); c.font = `10px ${css("--f-mono")}`;
+  if (rowLabels) { c.textAlign = "right"; c.textBaseline = "middle"; rowLabels.forEach((l, i) => c.fillText(l, labelW - 6, labelH + i * cell + cell / 2)); }
+  if (colLabels) { c.save(); c.textAlign = "left"; c.textBaseline = "middle";
+    colLabels.forEach((l, j) => { c.save(); c.translate(labelW + j * cell + cell / 2, labelH - 6); c.rotate(-Math.PI / 2); c.fillText(l, 0, 0); c.restore(); }); c.restore(); }
+  canvas._hit = { M, cell, labelW, labelH, rowName, colName, rowLabels, colLabels };
+}
+
+function attachTip(canvas) {
+  const tip = $("wtip");
+  canvas.addEventListener("mousemove", e => {
+    const h = canvas._hit; if (!h) return;
+    const r = canvas.getBoundingClientRect(), x = e.clientX - r.left - h.labelW, y = e.clientY - r.top - h.labelH;
+    const i = Math.floor(y / h.cell), j = Math.floor(x / h.cell);
+    if (i < 0 || j < 0 || i >= h.M.length || j >= h.M[0].length) { tip.hidden = true; return; }
+    const rl = h.rowLabels ? h.rowLabels[i] : `${h.rowName} ${i + 1}`, cl = h.colLabels ? h.colLabels[j] : `${h.colName} ${j + 1}`;
+    tip.textContent = `${cl} → ${rl}: ${h.M[i][j] >= 0 ? "+" : ""}${h.M[i][j].toFixed(3)}`;
+    tip.hidden = false; tip.style.left = Math.min(e.clientX + 12, innerWidth - 270) + "px"; tip.style.top = (e.clientY + 14) + "px";
+  });
+  canvas.addEventListener("mouseleave", () => { tip.hidden = true; });
+}
+
+function renderWeights() {
+  if (!brain) { $("wmeta").textContent = "Weights appear after the first training run."; return; }
+  const all = [...brain.W1.flat(), ...brain.b1, ...brain.W2.flat(), ...brain.b2, ...brain.W3.flat(), ...brain.b3];
+  const absMax = Math.max(...all.map(Math.abs)), mean = all.reduce((a, b) => a + b, 0) / all.length;
+  $("wmeta").textContent = `${brainSource} · ${all.length.toLocaleString()} numbers · largest ${absMax.toFixed(2)} · average ${mean >= 0 ? "+" : ""}${mean.toFixed(3)}`;
+  const actionNames = ACTIONS.map(a => a.replace("_", " "));
+  const influence = matMul(matMul(brain.W3, brain.W2), brain.W1);  // 10 x 34
+  drawHeat($("w-influence"), influence, { cell: 16, rowLabels: actionNames, colLabels: INPUT_NAMES, labelW: 80, labelH: 104 });
+  drawHeat($("w-1"), brain.W1, { cell: 6, colLabels: INPUT_NAMES, labelH: 104, rowName: "neuron A", colName: "input" });
+  drawHeat($("w-2"), brain.W2, { cell: 5, rowName: "neuron B", colName: "neuron A" });
+  drawHeat($("w-3"), brain.W3, { cell: 6, rowLabels: actionNames, labelW: 70, rowName: "action", colName: "neuron B" });
+  // Histogram
+  const bins = 40, lo = -absMax, hi = absMax, counts = Array(bins).fill(0);
+  all.forEach(v => counts[Math.min(bins - 1, Math.floor((v - lo) / (hi - lo) * bins))]++);
+  const cmax = Math.max(...counts), Wd = 360, Ht = 200, L = 34, B = 26, T = 8, bw = (Wd - L - 8) / bins;
+  const yt = niceTicks(0, cmax, 3);
+  let svg = yt.map(v => `<line x1="${L}" x2="${Wd - 8}" y1="${Ht - B - v / Math.max(cmax, yt.at(-1)) * (Ht - B - T)}" y2="${Ht - B - v / Math.max(cmax, yt.at(-1)) * (Ht - B - T)}" stroke="var(--line)"/>
+    <text x="${L - 4}" y="${Ht - B - v / Math.max(cmax, yt.at(-1)) * (Ht - B - T) + 4}" text-anchor="end">${v}</text>`).join("");
+  counts.forEach((n, i) => { const h = n / Math.max(cmax, yt.at(-1)) * (Ht - B - T), mid = lo + (i + .5) * (hi - lo) / bins;
+    svg += `<rect x="${(L + i * bw + .5).toFixed(1)}" y="${(Ht - B - h).toFixed(1)}" width="${(bw - 1).toFixed(1)}" height="${h.toFixed(1)}" fill="${mid >= 0 ? "var(--accent)" : "var(--neg)"}"/>`; });
+  [lo, 0, hi].forEach(v => svg += `<text x="${L + (v - lo) / (hi - lo) * (Wd - L - 8)}" y="${Ht - 8}" text-anchor="middle">${v.toFixed(1)}</text>`);
+  $("w-hist").innerHTML = svg;
+}
+["w-influence", "w-1", "w-2", "w-3"].forEach(id => attachTip($(id)));
+
+// ------------------------------------------------------------ BOOT and PWR buttons: pet Pip
+function petPip(btn) {
+  btn.classList.add("pressed"); setTimeout(() => btn.classList.remove("pressed"), 140);
+  pv.reason = "Ooh, pats! <3";
+  beginPerform("hop");
+  $("pv-why").textContent = "You pressed " + btn.textContent.trim() + ". On the real board that counts as a pat: Pip hops, and its love bar goes up on its next thought.";
+  clearTimeout(petPip._t); petPip._t = setTimeout(() => { pv.reason = ""; }, 4000);
+}
+["btn-boot", "btn-pwr"].forEach(id => $(id).addEventListener("click", e => petPip(e.currentTarget)));
 
 // ------------------------------------------------------------ personality shapes
 function renderRadars() {
@@ -579,7 +733,7 @@ function renderRadars() {
   }).join("");
 }
 
-function render() { renderProgress(); renderChart(); renderMix(); renderNet(); renderRadars(); renderPersonalities(); renderPipeline(); renderRuns(); }
+function render() { renderProgress(); renderChart(); renderMix(); renderNet(); renderWeights(); renderRadars(); renderPersonalities(); renderPipeline(); renderRuns(); }
 buildGallery();
 document.fonts?.ready.then(buildGallery);
 loopPreview();
@@ -619,6 +773,7 @@ async function poll() {
   let wait = 60, statusErr = "";
   try { status = await fetchStatus(); } catch (e) { statusErr = `Couldn't load training progress (${e.message}).`; }
   await fetchApi();
+  await loadBrain();
   render();
   wait = isBusy() ? 15 : 60;
   const parts = [`Checked ${new Date().toLocaleTimeString()} · next check in ${wait}s`];
