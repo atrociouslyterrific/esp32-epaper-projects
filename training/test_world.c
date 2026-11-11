@@ -25,11 +25,11 @@ int main(int argc, char **argv) {
     PipSenses se;
     float charging, touched, orient;
     int a;
-    float want[5], wantLogits[PIP_N_ACTIONS];
+    float want[9], wantLogits[PIP_N_ACTIONS];  // 5 needs + 4 feelings
     fscanf(f, "%f %f %f %f %f %f %f %f %d", &se.tempC, &se.humidity, &se.hour, &se.sound, &se.battery,
            &charging, &touched, &orient, &a);
     se.charging = (int)charging; se.touched = (int)touched; se.orient = (int)orient;
-    for (int i = 0; i < 5; i++) fscanf(f, "%f", &want[i]);
+    for (int i = 0; i < 9; i++) fscanf(f, "%f", &want[i]);
     for (int i = 0; i < PIP_N_ACTIONS; i++) fscanf(f, "%f", &wantLogits[i]);
     float wantReward;
     fscanf(f, "%f", &wantReward);
@@ -49,8 +49,8 @@ int main(int argc, char **argv) {
     pip_act(&s, &se, &t, a);  // follow Python's choice so the runs stay in step
     float rd = fabsf(pip_reward(&s, &t, a, night) - wantReward);
     if (rd > worstReward) worstReward = rd;
-    float got[5] = {s.food, s.energy, s.fun, s.comfort, s.social};
-    for (int i = 0; i < 5; i++) {
+    float got[9] = {s.food, s.energy, s.fun, s.comfort, s.social, s.grumpy, s.sulky, s.scared, s.frustrated};
+    for (int i = 0; i < 9; i++) {
       float d = fabsf(got[i] - want[i]);
       if (d > worstNeed) worstNeed = d;
     }

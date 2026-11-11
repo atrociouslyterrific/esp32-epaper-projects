@@ -12,6 +12,8 @@
 // dances, and gazes out of the window.
 //
 // Every few minutes Pip says something in a speech bubble.
+// Pip can also feel grumpy (woken up), sulky (ignored), scared (flipped / loud noises) or
+// frustrated (can't do what it wants). Each feeling fades on its own; snacks and pats help.
 //
 // Buttons: tap BOOT to drop a snack, tap PWR to pet Pip (it hops). Hold BOOT 5 s to forget Wi-Fi.
 // Phone: join "Pip-Setup" Wi-Fi the first time, then open http://pip.local
@@ -206,9 +208,26 @@ int sampleAction(const float *logits) {
 }
 
 // A short human explanation of why Pip probably chose this.
+// Which negative feeling (if any) is strongest right now: 0 grumpy, 1 sulky, 2 scared,
+// 3 frustrated, or -1 if Pip feels fine.
+enum Feeling { F_NONE = -1, F_GRUMPY, F_SULKY, F_SCARED, F_FRUSTRATED };
+int strongestFeeling(float threshold) {
+  float v[4] = {pip.grumpy, pip.sulky, pip.scared, pip.frustrated};
+  int best = -1;
+  for (int i = 0; i < 4; i++) if (v[i] > threshold && (best < 0 || v[i] > v[best])) best = i;
+  return best;
+}
+
 void explain(int a) {
   bool night = senses.hour >= 22 || senses.hour < 7;
   const char *r = "";
+  switch (strongestFeeling(0.35f)) {  // a strong feeling colours everything
+    case F_GRUMPY:     snprintf(reason, sizeof(reason), "%s", pip.prevAction == A_NAP ? "Hmph. I was napping!" : "Feeling grumpy..."); return;
+    case F_SULKY:      snprintf(reason, sizeof(reason), "%s", "Not talking to you. Hmph."); return;
+    case F_SCARED:     snprintf(reason, sizeof(reason), "%s", "Eek! That was scary!"); return;
+    case F_FRUSTRATED: snprintf(reason, sizeof(reason), "%s", "Grr, it's not working!"); return;
+    default: break;
+  }
   switch (a) {
     case A_NAP:
       r = pip.energy < 0.4f ? "I'm so tired..." : night ? "It's night-time, zzz" : traits.lazy > 0.6f ? "Naps are the best" : "Just resting my eyes";
@@ -362,9 +381,15 @@ void startSD() {
   sdOk = SD_MMC.begin("/sdcard", true);
   if (!sdOk) { Serial.println("No microSD card (diary off)"); return; }
   SD_MMC.mkdir("/pip");
+  if (SD_MMC.exists("/pip/diary.csv")) {  // older diaries didn't have the feelings columns
+    File f = SD_MMC.open("/pip/diary.csv", FILE_READ);
+    String header = f ? f.readStringUntil('\n') : "";
+    if (f) f.close();
+    if (header.indexOf("grumpy") < 0) { SD_MMC.remove("/pip/diary-old.csv"); SD_MMC.rename("/pip/diary.csv", "/pip/diary-old.csv"); }
+  }
   if (!SD_MMC.exists("/pip/diary.csv")) {
     File f = SD_MMC.open("/pip/diary.csv", FILE_WRITE);
-    if (f) { f.println("thought,time,temp_c,humidity,battery,petted,food,energy,fun,comfort,love,action,chance,reward,brain_version"); f.close(); }
+    if (f) { f.println("thought,time,temp_c,humidity,battery,petted,food,energy,fun,comfort,love,grumpy,sulky,scared,frustrated,action,chance,reward,brain_version"); f.close(); }
   }
   Serial.printf("microSD card: %llu MB, diary on\n", SD_MMC.cardSize() / (1024 * 1024));
 }
@@ -374,9 +399,10 @@ void diaryWrite(int a, float r) {
   File f = SD_MMC.open("/pip/diary.csv", FILE_APPEND);
   if (!f) return;
   int hr = (int)senses.hour, mn = (int)((senses.hour - hr) * 60);
-  f.printf("%lu,%s%02d:%02d,%.1f,%.0f,%.2f,%d,%.3f,%.3f,%.3f,%.3f,%.3f,%s,%.2f,%.3f,%d\n", thoughts,
+  f.printf("%lu,%s%02d:%02d,%.1f,%.0f,%.2f,%d,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%s,%.2f,%.3f,%d\n", thoughts,
            clockSet ? "" : "~", hr, mn, senses.tempC, senses.humidity, senses.battery, senses.touched,
-           pip.food, pip.energy, pip.fun, pip.comfort, pip.social, PIP_ACTION_NAMES[a], actionProbs[a], r,
+           pip.food, pip.energy, pip.fun, pip.comfort, pip.social, pip.grumpy, pip.sulky, pip.scared, pip.frustrated,
+           PIP_ACTION_NAMES[a], actionProbs[a], r,
            PIP_BRAIN_VERSION);
   f.close();
 }
@@ -614,7 +640,7 @@ void drawPip(int a, bool sad) {
   bool walk = animMode == AN_WALK;
   bool onBed = pipX < 52 && (a == A_NAP || a == A_WARM_UP) && !walk;
   int rx = BLOB_RX * squash / 100, ry = BLOB_RY * 100 / squash;
-  int cx = pipX;
+  int cx = pipX + ((!walk && pip.scared > 0.35f) ? (millis() / 120 % 2 ? 1 : -1) : 0);  // scared: trembling
   int bottom = (onBed ? 97 : FLOOR_Y) + pipJump;
   int cy = bottom - ry, top = bottom - 2 * ry;
   int side = cx > 130 ? -1 : 1;  // which side extra bits (notes, "!") go on
@@ -634,7 +660,33 @@ void drawPip(int a, bool sad) {
   int ey = cy - 1, look = facing * 2, gap = 7 * rx / BLOB_RX;
   int el = cx - gap + look, er = cx + gap + look;
   int my = cy + 6 * 100 / squash;
-  if (walk || a == A_EXPLORE) {  // eyes look where Pip is going
+  int feel = walk ? F_NONE : strongestFeeling(0.35f);
+  if (feel == F_GRUMPY) {
+    display.drawLine(el - 3, ey, el + 3, ey, GxEPD_BLACK);          // half-shut eyes
+    display.drawLine(er - 3, ey, er + 3, ey, GxEPD_BLACK);
+    display.drawLine(el - 4, ey - 6, el + 3, ey - 3, GxEPD_BLACK);  // cross brows
+    display.drawLine(er + 4, ey - 6, er - 3, ey - 3, GxEPD_BLACK);
+    display.drawLine(cx - 4, my, cx + 4, my, GxEPD_BLACK);          // flat mouth
+    // a tiny storm cloud
+    display.fillCircle(cx - 4, top - 10, 4, GxEPD_BLACK); display.fillCircle(cx + 3, top - 11, 5, GxEPD_BLACK);
+    display.drawLine(cx, top - 6, cx - 2, top - 2, GxEPD_BLACK); display.drawLine(cx - 2, top - 2, cx + 1, top - 2, GxEPD_BLACK);
+  } else if (feel == F_SULKY) {
+    // facing away: the back of a blob has no face, just a "..." over its head
+    for (int i = 0; i < 3; i++) display.fillCircle(cx - 6 + i * 6, top - 6, 1, GxEPD_BLACK);
+  } else if (feel == F_SCARED) {
+    display.drawCircle(el, ey, 4, GxEPD_BLACK); display.drawCircle(er, ey, 4, GxEPD_BLACK);  // wide eyes
+    display.fillCircle(el, ey, 1, GxEPD_BLACK); display.fillCircle(er, ey, 1, GxEPD_BLACK);
+    drawArc(cx, my, 5, 0, 1); drawArc(cx - 2, my + 1, 2, -1, 1); drawArc(cx + 2, my + 1, 2, -1, 1);  // wobbly mouth
+    display.fillTriangle(cx + rx - 3, top + 1, cx + rx - 6, top + 7, cx + rx, top + 7, GxEPD_BLACK);  // sweat drop
+    display.fillCircle(cx + rx - 3, top + 8, 3, GxEPD_BLACK);
+  } else if (feel == F_FRUSTRATED) {
+    display.fillCircle(el, ey, 2, GxEPD_BLACK); display.fillCircle(er, ey, 2, GxEPD_BLACK);
+    display.drawLine(el - 4, ey - 5, el + 3, ey - 3, GxEPD_BLACK);
+    display.drawLine(er + 4, ey - 5, er - 3, ey - 3, GxEPD_BLACK);
+    for (int x = -5; x < 5; x += 2) display.drawLine(cx + x, my + ((x / 2) % 2 ? 1 : -1), cx + x + 2, my + ((x / 2) % 2 ? -1 : 1), GxEPD_BLACK);  // gritted teeth
+    display.drawCircle(cx - rx + 2, top - 3, 2, GxEPD_BLACK); display.drawCircle(cx - rx - 2, top - 8, 3, GxEPD_BLACK);  // steam
+    display.drawCircle(cx + rx - 2, top - 3, 2, GxEPD_BLACK); display.drawCircle(cx + rx + 2, top - 8, 3, GxEPD_BLACK);
+  } else if (walk || a == A_EXPLORE) {  // eyes look where Pip is going
     display.fillCircle(el, ey, 3, GxEPD_BLACK); display.fillCircle(er, ey, 3, GxEPD_BLACK);
     display.drawPixel(el + facing, ey - 1, GxEPD_WHITE); display.drawPixel(er + facing, ey - 1, GxEPD_WHITE);
     drawArc(cx + look, my, 4, 2, 1);
@@ -707,7 +759,7 @@ void drawPip(int a, bool sad) {
       display.drawPixel(el + 1, ey - 1, GxEPD_WHITE); display.drawPixel(er + 1, ey - 1, GxEPD_WHITE);
       if (a != A_HIDE) drawArc(cx + look, my - 1, 6, sad ? -3 : 3, 2);
   }
-  if (sad && a != A_NAP && !walk) {
+  if (sad && a != A_NAP && !walk && feel == F_NONE) {
     display.drawLine(el - 4, ey - 7, el + 2, ey - 5, GxEPD_BLACK);
     display.drawLine(er + 4, ey - 7, er - 2, ey - 5, GxEPD_BLACK);
   }
@@ -753,6 +805,7 @@ void finishSnack() {
   snackX = -1;
   snackCount++;
   pip.food = pip_clamp01(pip.food + 0.2f);
+  pip.grumpy *= 0.5f; pip.frustrated *= 0.5f; pip.sulky *= 0.7f;  // a treat helps bad moods
   pip.fun = pip_clamp01(pip.fun + 0.03f);
   saveState();
   snprintf(reason, sizeof(reason), "Yum! Thank you!");
@@ -1003,6 +1056,9 @@ void speakSomething() {
   int n = 0;
   bool night = clockSet && (senses.hour >= 22 || senses.hour < 6);
   bool morning = clockSet && senses.hour >= 6 && senses.hour < 10;
+  const char FEEL_MOOD[4] = {'G', 'U', 'F', 'Q'};
+  int feel = strongestFeeling(0.35f);
+  if (feel >= 0 && esp_random() % 10 < 7) { speak(FEEL_MOOD[feel], 15000); return; }
   if (action == A_NAP) { speak('S', 20000); return; }
   if (action == A_DANCE && esp_random() % 3 != 0) { speak('D', 15000); return; }
   if (action == A_WINDOW && esp_random() % 3 != 0) { speak('V', 15000); return; }
@@ -1092,6 +1148,8 @@ function show(s){
  $('act').textContent=s.action.replace('_',' ');$('why').textContent=s.reason;
  $('conf').textContent='Brain was '+Math.round(s.confidence*100)+'% sure';
  bars($('needs'),{food:s.food,energy:s.energy,fun:s.fun,comfort:s.comfort,love:s.social});
+ const bad=Object.entries({grumpy:s.grumpy,sulky:s.sulky,scared:s.scared,frustrated:s.frustrated}).filter(([k,v])=>v>0.03);
+ if(bad.length){const d=document.createElement('div');d.innerHTML='<h2 style="margin-top:12px">Bad moods</h2>';$('needs').append(d);const b=document.createElement('div');bars(b,Object.fromEntries(bad));$('needs').append(b);}
  bars($('traits'),{curious:s.curious,playful:s.playful,lazy:s.lazy,brave:s.brave,affectionate:s.affectionate});
  $('senses').innerHTML=`${s.temp.toFixed(1)}°C · ${Math.round(s.humidity)}% humidity<br>`+
   `time ${s.clock} · battery ${s.charging?'plugged in':Math.round(s.battery*100)+'%'}`;
@@ -1161,6 +1219,8 @@ void sendState() {
   j += "\"food\":" + String(pip.food, 3) + ",\"energy\":" + String(pip.energy, 3) + ",";
   j += "\"fun\":" + String(pip.fun, 3) + ",\"comfort\":" + String(pip.comfort, 3) + ",";
   j += "\"social\":" + String(pip.social, 3) + ",";
+  j += "\"grumpy\":" + String(pip.grumpy, 3) + ",\"sulky\":" + String(pip.sulky, 3) + ",";
+  j += "\"scared\":" + String(pip.scared, 3) + ",\"frustrated\":" + String(pip.frustrated, 3) + ",";
   j += "\"curious\":" + String(traits.curious, 3) + ",\"playful\":" + String(traits.playful, 3) + ",";
   j += "\"lazy\":" + String(traits.lazy, 3) + ",\"brave\":" + String(traits.brave, 3) + ",";
   j += "\"affectionate\":" + String(traits.affectionate, 3) + ",";
@@ -1190,11 +1250,7 @@ void sendSdFile(const char *path, const char *type) {
 }
 
 void handlePet() {
-  touchedPending = true;  // Pip feels it on its next thought
-  snprintf(reason, sizeof(reason), "Ooh, pats! <3");
-  startHop();
-  sayPetted();
-  needRedraw = true;
+  petPip();
   sendState();
 }
 
@@ -1368,12 +1424,27 @@ void checkButtons() {
   if (isrPwrTap) {   // tap PWR: pet Pip
     isrPwrTap = false;
     Serial.println("PWR tapped: pats!");
-    touchedPending = true;
+    petPip();
+  }
+}
+
+// How Pip reacts to a pat depends on how it feels.
+void petPip() {
+  touchedPending = true;  // the brain feels it on its next thought (and updates the feelings)
+  if (pip.sulky > 0.4f) {
+    pip.sulky = pip_clamp01(pip.sulky - 0.15f);  // it's working... a little
+    snprintf(reason, sizeof(reason), "...hmph.");
+    speak('U', 8000);
+  } else if (action == A_NAP && animMode == AN_REST) {
+    pip.grumpy = pip_clamp01(pip.grumpy + 0.3f * (0.6f + 0.8f * traits.lazy));
+    snprintf(reason, sizeof(reason), "Hmph! I was napping!");
+    speak('G', 8000);
+  } else {
     snprintf(reason, sizeof(reason), "Ooh, pats! <3");
     startHop();
     sayPetted();
-    needRedraw = true;
   }
+  needRedraw = true;
 }
 
 // ================================================================ main

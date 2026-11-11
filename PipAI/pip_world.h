@@ -20,6 +20,7 @@ typedef struct {
 
 typedef struct {
   float food, energy, fun, comfort, social;  // 0..1
+  float grumpy, sulky, scared, frustrated;   // negative feelings, 0..1
   int prevAction;
   float repeat;
   float touchRecent;
@@ -30,7 +31,7 @@ typedef struct {
   int prevOrient;
 } PipState;
 
-#define PIP_N_FEATURES 36
+#define PIP_N_FEATURES 40
 
 static inline float pip_clamp01(float v) { return v < 0 ? 0 : (v > 1 ? 1 : v); }
 static inline float pip_clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
@@ -41,10 +42,15 @@ static void pip_clamp_needs(PipState *s) {
   s->fun = pip_clamp01(s->fun);
   s->comfort = pip_clamp01(s->comfort);
   s->social = pip_clamp01(s->social);
+  s->grumpy = pip_clamp01(s->grumpy);
+  s->sulky = pip_clamp01(s->sulky);
+  s->scared = pip_clamp01(s->scared);
+  s->frustrated = pip_clamp01(s->frustrated);
 }
 
 static void pip_init(PipState *s, float food, float energy, float fun, float comfort, float social) {
   s->food = food; s->energy = energy; s->fun = fun; s->comfort = comfort; s->social = social;
+  s->grumpy = s->sulky = s->scared = s->frustrated = 0;
   s->prevAction = 0; s->repeat = 0; s->touchRecent = 0; s->novelty = 0;
   s->prevTemp = 0; s->hasPrevTemp = 0; s->prevSound = 0; s->prevOrient = 0;
 }
@@ -53,7 +59,7 @@ static void pip_init(PipState *s, float food, float energy, float fun, float com
 static void pip_observe(PipState *s, const PipSenses *se) {
   float touched = se->touched ? 1.0f : 0.0f;
   s->touchRecent = s->touchRecent * 0.7f + touched;
-  s->social += 0.1f * touched;
+  s->social += 0.1f * touched * (1 - 0.7f * s->sulky);  // a sulky Pip barely notices the first pats
   s->fun += 0.03f * touched;
   float prevT = s->hasPrevTemp ? s->prevTemp : se->tempC;
   float change = fabsf(se->tempC - prevT) / 2.0f + fabsf(se->sound - s->prevSound) +
@@ -62,10 +68,11 @@ static void pip_observe(PipState *s, const PipSenses *se) {
   pip_clamp_needs(s);
 }
 
-// The 34 numbers the brain sees (same order as features() in Python).
+// The 40 numbers the brain sees (same order as features() in Python).
 static void pip_features(const PipState *s, const PipSenses *se, const PipTraits *t, float *x) {
   int i = 0;
   x[i++] = s->food; x[i++] = s->energy; x[i++] = s->fun; x[i++] = s->comfort; x[i++] = s->social;
+  x[i++] = s->grumpy; x[i++] = s->sulky; x[i++] = s->scared; x[i++] = s->frustrated;
   x[i++] = (se->tempC - 22.0f) / 10.0f;
   x[i++] = se->humidity / 100.0f;
   x[i++] = sinf(2.0f * (float)M_PI * se->hour / 24.0f);
@@ -151,6 +158,28 @@ static void pip_act(PipState *s, const PipSenses *se, const PipTraits *t, int a)
     s->energy += 0.001f;
   }
 
+  // ---- Negative feelings (same as pip_world.py)
+  {
+    float touched = se->touched ? 1.0f : 0.0f;
+    float woken = touched * (s->prevAction == A_NAP ? 1.0f : 0.0f);
+    float pestered = touched * (s->energy < 0.3f ? 1.0f : 0.0f) * (s->touchRecent > 1.5f ? 1.0f : 0.0f);
+    float resting = (a == A_NAP || a == A_IDLE) ? 1.0f : 0.0f;
+    s->grumpy = s->grumpy * (0.85f - 0.15f * resting) + (0.5f * woken + 0.3f * pestered) * (0.6f + 0.8f * t->lazy);
+
+    float lonelyNow = (s->social < 0.2f && s->touchRecent < 0.05f) ? 1.0f : 0.0f;
+    s->sulky = s->sulky * (s->social > 0.4f ? 0.9f : 0.98f) + 0.03f * lonelyNow * (0.5f + t->affectionate) - 0.25f * touched;
+
+    float flipped = (se->orient == 3 && s->prevOrient != 3) ? 1.0f : 0.0f;
+    float tilted = (se->orient == 2 && s->prevOrient != 2) ? 1.0f : 0.0f;
+    float loud = sound > 0.7f ? 1.0f : 0.0f;
+    s->scared = s->scared * (0.85f - 0.15f * t->brave) - 0.15f * hiding +
+                (0.6f * flipped + 0.3f * tilted + 0.5f * loud) * (1.2f - 0.8f * t->brave);
+
+    float failed = ((a == A_PLAY || a == A_DANCE || a == A_EXPLORE) && s->energy < 0.15f) ? 1.0f : 0.0f;
+    float stuffed = (a == A_EAT && s->food > 0.95f) ? 1.0f : 0.0f;
+    s->frustrated = s->frustrated * 0.8f + 0.3f * failed + 0.2f * stuffed;
+  }
+
   pip_clamp_needs(s);
   s->repeat = (a == s->prevAction) ? s->repeat + 1 : 0;
   s->prevAction = a;
@@ -168,7 +197,9 @@ static float pip_reward(const PipState *s, const PipTraits *t, int a, float nigh
   float w_fun = 0.6f + 0.6f * t->playful;
   float w_comfort = 1.0f - 0.3f * t->brave;
   float w_social = 0.3f + 0.9f * t->affectionate;
-  float r = -(w_food * (1 - s->food) * (1 - s->food) + w_energy * (1 - s->energy) * (1 - s->energy) +
+  float r_feel = -0.3f * (s->grumpy * s->grumpy + s->sulky * s->sulky + s->scared * s->scared +
+                          s->frustrated * s->frustrated);
+  float r = r_feel - (w_food * (1 - s->food) * (1 - s->food) + w_energy * (1 - s->energy) * (1 - s->energy) +
               w_fun * (1 - s->fun) * (1 - s->fun) + w_comfort * (1 - s->comfort) * (1 - s->comfort) +
               w_social * (1 - s->social) * (1 - s->social));
   const float like = 0.3f;

@@ -17,9 +17,10 @@ N_ACTIONS = len(ACTIONS)
 
 TRAITS = ["curious", "playful", "lazy", "brave", "affectionate"]
 NEEDS = ["food", "energy", "fun", "comfort", "social"]
+EMOTIONS = ["grumpy", "sulky", "scared", "frustrated"]  # negative feelings: 0 = none, 1 = very
 
 # Orientation: 0 = no sensor, 1 = upright, 2 = tilted, 3 = upside down
-N_FEATURES = 36  # 12 actions -> the 'last action' part grew by 2
+N_FEATURES = 40  # 36 + the 4 feelings
 
 
 class PipState:
@@ -38,6 +39,8 @@ class PipState:
         self.prev_temp = np.full(B, np.nan)
         self.prev_sound = np.zeros(B)
         self.prev_orient = np.zeros(B, dtype=np.int64)
+        for name in EMOTIONS:
+            setattr(self, name, np.zeros(B))
 
     def reset(self, mask, rng):
         n = int(mask.sum())
@@ -50,9 +53,11 @@ class PipState:
         self.prev_temp[mask] = np.nan
         self.prev_sound[mask] = 0
         self.prev_orient[mask] = 0
+        for name in EMOTIONS:
+            getattr(self, name)[mask] = 0
 
     def clamp(self):
-        for name in NEEDS:
+        for name in NEEDS + EMOTIONS:
             np.clip(getattr(self, name), 0.0, 1.0, out=getattr(self, name))
 
 
@@ -60,7 +65,7 @@ def observe(st, se):
     """Take in this moment's senses (before deciding). se = dict of arrays."""
     touched = se["touched"].astype(float)
     st.touch_recent = st.touch_recent * 0.7 + touched
-    st.social += 0.1 * touched
+    st.social += 0.1 * touched * (1 - 0.7 * st.sulky)  # a sulky Pip barely notices the first pats
     st.fun += 0.03 * touched
     prev_temp = np.where(np.isnan(st.prev_temp), se["temp"], st.prev_temp)
     change = (np.abs(se["temp"] - prev_temp) / 2.0
@@ -71,7 +76,7 @@ def observe(st, se):
 
 
 def features(st, se, tr):
-    """The 34 numbers the brain sees. Order must match pip_features() in C."""
+    """The 40 numbers the brain sees. Order must match pip_features() in C."""
     B = st.food.shape[0]
     h = se["hour"]
     orient = np.zeros((B, 4))
@@ -80,6 +85,7 @@ def features(st, se, tr):
     prev[np.arange(B), st.prev_action] = 1.0
     cols = [
         st.food, st.energy, st.fun, st.comfort, st.social,
+        st.grumpy, st.sulky, st.scared, st.frustrated,
         (se["temp"] - 22.0) / 10.0, se["humidity"] / 100.0,
         np.sin(2 * np.pi * h / 24.0), np.cos(2 * np.pi * h / 24.0),
         se["sound"], se["battery"], se["charging"].astype(float),
@@ -169,6 +175,27 @@ def act(st, se, tr, a):
     st.comfort += wn * 0.02 * day
     st.energy += wn * 0.001
 
+    # ---- Negative feelings. Each has a cause, fades by itself, and has something that helps.
+    touched = se["touched"].astype(float)
+    # Grumpy: woken up by pats, or pestered while exhausted. Resting helps. Lazy Pips mind more.
+    woken = touched * (st.prev_action == NAP)
+    pestered = touched * (st.energy < 0.3) * (st.touch_recent > 1.5)
+    resting = ((a == NAP) | (a == IDLE)).astype(float)
+    st.grumpy = st.grumpy * (0.85 - 0.15 * resting) + (0.5 * woken + 0.3 * pestered) * (0.6 + 0.8 * lazy)
+    # Sulky: left alone while lonely. Fades once Pip feels loved again; pats help a lot.
+    lonely_now = ((st.social < 0.2) & (st.touch_recent < 0.05)).astype(float)
+    st.sulky = st.sulky * np.where(st.social > 0.4, 0.9, 0.98) + 0.03 * lonely_now * (0.5 + affectionate) - 0.25 * touched
+    # Scared: flipped over, tilted, or a sudden loud noise. Hiding helps; brave Pips recover fast.
+    flipped = ((se["orient"] == 3) & (st.prev_orient != 3)).astype(float)
+    tilted = ((se["orient"] == 2) & (st.prev_orient != 2)).astype(float)
+    loud = (sound > 0.7).astype(float)
+    st.scared = (st.scared * (0.85 - 0.15 * brave) - 0.15 * hiding
+                 + (0.6 * flipped + 0.3 * tilted + 0.5 * loud) * (1.2 - 0.8 * brave))
+    # Frustrated: tried to play/dance/explore while too tired, or tried to eat while stuffed.
+    failed = (((a == PLAY) | (a == DANCE) | (a == EXPLORE)) & (st.energy < 0.15)).astype(float)
+    stuffed = ((a == EAT) & (st.food > 0.95)).astype(float)
+    st.frustrated = st.frustrated * 0.8 + 0.3 * failed + 0.2 * stuffed
+
     st.clamp()
     st.repeat = np.where(a == st.prev_action, st.repeat + 1, 0)
     st.prev_action = a.copy()
@@ -185,7 +212,9 @@ def reward(st, tr, a):
     w_fun = 0.6 + 0.6 * playful
     w_comfort = 1.0 - 0.3 * brave
     w_social = 0.3 + 0.9 * affectionate
-    r = -(w_food * (1 - st.food) ** 2 + w_energy * (1 - st.energy) ** 2 + w_fun * (1 - st.fun) ** 2
+    # Bad feelings feel bad (so Pip learns what makes them go away)
+    r_feel = -0.3 * (st.grumpy ** 2 + st.sulky ** 2 + st.scared ** 2 + st.frustrated ** 2)
+    r = r_feel - (w_food * (1 - st.food) ** 2 + w_energy * (1 - st.energy) ** 2 + w_fun * (1 - st.fun) ** 2
           + w_comfort * (1 - st.comfort) ** 2 + w_social * (1 - st.social) ** 2)
     # Personality: each trait makes its favourite activity enjoyable in itself,
     # and a LOW trait makes that activity unpleasant (a lazy Pip hates exploring...).

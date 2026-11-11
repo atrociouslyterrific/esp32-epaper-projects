@@ -798,7 +798,7 @@ function buildGallery() {
 }
 
 // ------------------------------------------------------------ network diagram
-const GROUPS = [["needs", 5], ["temp & humidity", 2], ["time of day", 2], ["sound", 1], ["battery", 2], ["your touch", 1],
+const GROUPS = [["needs", 5], ["bad moods", 4], ["temp & humidity", 2], ["time of day", 2], ["sound", 1], ["battery", 2], ["your touch", 1],
   ["tilt", 4], ["something changed", 1], ["personality", 5], ["last action", ACTIONS.length], ["repeating", 1]];
 function renderNet() {
   const svg = $("net"), Wd = 820, Ht = 420, T = 14, B = 14;
@@ -846,7 +846,7 @@ function renderNet() {
 }
 
 // ------------------------------------------------------------ the real weights
-const INPUT_NAMES = ["food", "energy", "fun", "comfort", "love", "temperature", "humidity", "time (sin)", "time (cos)",
+const INPUT_NAMES = ["food", "energy", "fun", "comfort", "love", "grumpy", "sulky", "scared", "frustrated", "temperature", "humidity", "time (sin)", "time (cos)",
   "sound", "battery", "charging", "your touch", "tilt: no sensor", "upright", "tilted", "upside down", "something changed",
   "curious", "playful", "lazy", "brave", "affectionate",
   ...ACTIONS.map(a => "last: " + a.replace("_", " ")), "repeating"];
@@ -976,7 +976,8 @@ function renderRadars() {
 }
 
 const MOOD_NAMES = { S: "asleep", H: "hungry", T: "tired", L: "lonely", B: "bored", K: "cold", W: "hot", N: "night", M: "morning",
-  P: "petted", C: "curious", Y: "playful", Z: "lazy", R: "brave", X: "shy", A: "affectionate", J: "happy", D: "dancing", V: "window" };
+  P: "petted", C: "curious", Y: "playful", Z: "lazy", R: "brave", X: "shy", A: "affectionate", J: "happy", D: "dancing", V: "window",
+  G: "grumpy", U: "sulky", F: "scared", Q: "frustrated" };
 function renderTalk() {
   const v = status?.voice;
   if (!v?.samples) return;

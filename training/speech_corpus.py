@@ -17,6 +17,7 @@ MOODS = {
     "S": "asleep", "H": "hungry", "T": "tired", "L": "lonely", "B": "bored", "K": "cold", "W": "hot",
     "N": "night", "M": "morning", "P": "petted", "C": "curious", "Y": "playful", "Z": "lazy",
     "R": "brave", "X": "shy", "A": "affectionate", "J": "happy", "D": "dancing", "V": "window",
+    "G": "grumpy", "U": "sulky", "F": "scared", "Q": "frustrated",
 }
 
 SLOTS = {
@@ -105,6 +106,21 @@ TEMPLATES = {
     "D": ["dance party{end}", "watch me {move}{end}", "{move} {move}{end}", "{excl}, dance time!", "groovy blob{end}",
           "i've got the moves{end}", "*{move}s*", "dance with me?", "boogie time{end}", "{move} to the left{end}",
           "feel the beat{end}", "i'm a dancing blob", "{opener} let's {move}{end}", "best dance ever{end}"],
+    # Negative feelings: grumpy-cute, never mean
+    "G": ["hmph{calm}", "hmph. i was napping", "go away{calm}", "*grumbles*", "not now{calm}", "i'm grumpy{calm}",
+          "five more minutes!", "why'd you wake me?", "grr{calm}", "leave me be{calm}", "*turns away*",
+          "i was dreaming of {food}", "too sleepy for pats", "hmph, {you}{calm}", "*grumpy blob noises*",
+          "ask me later{calm}", "i'm not a morning blob"],
+    "U": ["...", "i'm not talking to you", "*sulks*", "you forgot me{calm}", "hmph. where were you?",
+          "fine. i'll play alone", "*sits in the corner*", "nobody plays with me{calm}", "i'm ignoring you{calm}",
+          "...maybe one pat", "you were gone so long", "*looks away*", "i missed you. hmph.",
+          "i'm not sulking{calm}", "*sigh*"],
+    "F": ["eek{end}", "eep! what was that?!", "*trembles*", "i'm scared{calm}", "too loud{end}",
+          "*hides*", "make it stop{end}", "hold me?", "is it gone?", "*shaking*", "the world is upside down!",
+          "{excl}! scary!", "i don't like that{calm}", "help{end}", "*peeks out nervously*"],
+    "Q": ["grr{end}", "it's not working!", "*stomps*", "ugh{calm}", "why won't it work?", "too tired to {move}{end}",
+          "i can't {move}{calm}", "*huffs*", "argh{end}", "so annoying{end}", "i give up{calm}",
+          "*steam comes out*", "not fair{end}", "i'm too full{end}", "silly {thing}{calm}"],
     "V": ["look, {sky}{end}", "i see {sky}", "{excl}, {sky}!", "hello {sky}{end}", "the view is nice{calm}",
           "{sky} is out {time}", "i love this window", "what's {sky} doing?", "pretty {sky}{calm}",
           "*watches {sky}*", "wave to {sky}{end}", "the world is big{calm}", "{opener} {sky}!"],

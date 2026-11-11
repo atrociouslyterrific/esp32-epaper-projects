@@ -258,7 +258,7 @@ def record_trajectory(actor, path, steps=300):
             world.advance(a)
             senses = [se["temp"][0], se["humidity"][0], se["hour"][0], se["sound"][0], se["battery"][0],
                       se["charging"][0], int(se["touched"][0]), se["orient"][0]]
-            after = [getattr(world.st, n)[0] for n in W.NEEDS]
+            after = [getattr(world.st, n)[0] for n in W.NEEDS + W.EMOTIONS]
             f.write(" ".join(f"{v:.9g}" for v in senses) + f" {a[0]} "
                     + " ".join(f"{v:.9g}" for v in after) + " "
                     + " ".join(f"{v:.9g}" for v in logits) + f" {rew:.9g}\n")
