@@ -97,7 +97,7 @@ static void pip_act(PipState *s, const PipSenses *se, const PipTraits *t, int a)
   // Natural drift
   s->food -= 0.006f * (1 - 0.5f * napping);
   s->energy -= 0.004f + 0.004f * (se->battery < 0.2f ? 1.0f : 0.0f);
-  s->fun -= 0.005f;
+  s->fun -= 0.007f;  // fun fades fairly fast: Pip needs to DO things
   s->social -= 0.003f;
   s->comfort += 0.1f * (envComfort - s->comfort);
 
@@ -105,14 +105,16 @@ static void pip_act(PipState *s, const PipSenses *se, const PipTraits *t, int a)
   if (a == A_IDLE) s->energy += 0.002f;
 
   float startled = sound > 0.6f ? 1.0f : 0.0f;
-  float napGain = 0.03f * (1 - 0.8f * sound) * (1 + 0.3f * night) * (1 - startled);
+  float restless = s->energy > 0.8f ? 1.0f : 0.0f;  // not tired: napping barely helps and gets boring
+  float napGain = 0.03f * (1 - 0.8f * sound) * (1 + 0.3f * night) * (1 - startled) * (1 - 0.7f * restless);
   s->energy += napping * napGain;
   s->comfort -= napping * 0.1f * startled;
+  s->fun -= napping * 0.004f * restless;
 
   if (a == A_EAT) {
-    float overfull = s->food > 0.9f ? 1.0f : 0.0f;
+    float overfull = s->food > 0.75f ? 1.0f : 0.0f;  // eating when already fairly full feels bad
     s->food += 0.08f;
-    s->comfort -= 0.05f * overfull;
+    s->comfort -= 0.08f * overfull;
   }
   if (a == A_EXPLORE) {
     s->fun += 0.03f + 0.03f * t->curious + 0.05f * s->novelty;

@@ -102,12 +102,13 @@ def act(st, se, tr, a):
     env_comfort = np.clip(1.0 - cold - hot - noise - flip * (1 - 0.5 * hiding), 0, 1)
     napping = (a == NAP).astype(float)
     night = ((hour >= 22) | (hour < 7)).astype(float)
+    st.prev_hour_day = 1.0 - night  # used by reward(): daytime naps are discouraged
     owner_near = (st.touch_recent > 0.3).astype(float)
 
     # Natural drift
     st.food -= 0.006 * (1 - 0.5 * napping)
     st.energy -= 0.004 + 0.004 * (se["battery"] < 0.2)
-    st.fun -= 0.005
+    st.fun -= 0.007  # fun fades fairly fast: Pip needs to DO things
     st.social -= 0.003
     st.comfort += 0.1 * (env_comfort - st.comfort)
 
@@ -115,14 +116,16 @@ def act(st, se, tr, a):
     st.energy += np.where(a == IDLE, 0.002, 0)
 
     startled = (sound > 0.6).astype(float)
-    nap_gain = 0.03 * (1 - 0.8 * sound) * (1 + 0.3 * night) * (1 - startled)
+    restless = (st.energy > 0.8).astype(float)  # not tired: napping barely helps and gets boring
+    nap_gain = 0.03 * (1 - 0.8 * sound) * (1 + 0.3 * night) * (1 - startled) * (1 - 0.7 * restless)
     st.energy += napping * nap_gain
     st.comfort -= napping * 0.1 * startled
+    st.fun -= napping * 0.004 * restless
 
     eat = (a == EAT).astype(float)
-    overfull = (st.food > 0.9).astype(float)
+    overfull = (st.food > 0.75).astype(float)  # eating when already fairly full feels bad
     st.food += eat * 0.08
-    st.comfort -= eat * 0.05 * overfull
+    st.comfort -= eat * 0.08 * overfull
 
     ex = (a == EXPLORE).astype(float)
     st.fun += ex * (0.03 + 0.03 * curious + 0.05 * st.novelty)
@@ -179,7 +182,15 @@ def reward(st, tr, a):
     r -= like * 0.5 * (lazy - 0.5) * ((a == EXPLORE) | (a == PLAY))
     r += like * (affectionate - 0.5) * ((a == SING) | (a == CALL))
     r += like * (0.5 - brave) * (a == HIDE)
-    r -= 0.01 * ((st.repeat > 8) & (a != NAP))  # real pets don't do one thing forever
+    # Being active is rewarding in itself, whatever the personality
+    active = (a == EXPLORE) | (a == PLAY) | (a == SING) | (a == CALL)
+    r += 0.04 * active
+    # Sleeping the day away when not tired, or eating when not hungry, feels lazy
+    day = (st.prev_hour_day if hasattr(st, "prev_hour_day") else 1.0)
+    r -= 0.04 * ((a == NAP) & (st.energy > 0.6)) * day
+    r -= 0.03 * ((a == EAT) & (st.food > 0.7))
+    # Real pets don't do one thing forever
+    r -= 0.02 * ((st.repeat > 4) & (a != NAP)) + 0.02 * ((st.repeat > 12) & (a == NAP))
     return r
 
 
