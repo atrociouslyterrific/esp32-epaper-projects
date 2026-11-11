@@ -14,7 +14,17 @@ if [ ! -d "$DIR/.git" ]; then
   git -C "$DIR" remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
 fi
 cp "$SRC" "$DIR/status.json"
-git -C "$DIR" add status.json
+# GitHub's raw file server caches each file for up to 5 minutes, so the website would
+# see stale progress. Also save a copy named after the current minute: a new name each
+# minute can't be cached yet. Keep only the last 10 minutes of these copies.
+mkdir -p "$DIR/m"
+MIN=$(( $(date +%s) / 60 ))
+cp "$SRC" "$DIR/m/$MIN.json"
+for f in "$DIR"/m/*.json; do
+  n=$(basename "$f" .json)
+  [ "$n" -lt $((MIN - 10)) ] 2>/dev/null && rm -f "$f"
+done
+git -C "$DIR" add -A status.json m
 git -C "$DIR" commit -q --allow-empty -m "Training status" --amend 2>/dev/null || \
   git -C "$DIR" commit -q --allow-empty -m "Training status"
 git -C "$DIR" push -q -f origin status || echo "status push failed (will retry)"
