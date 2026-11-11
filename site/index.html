@@ -110,6 +110,12 @@ h3 { font: 600 14px var(--f-body); margin: 16px 0 8px; }
 @media (max-width: 620px) { .wgrid { grid-template-columns: 1fr; } }
 .tip { position: fixed; z-index: 20; pointer-events: none; background: var(--ink); color: var(--paper); font: 12px var(--f-mono);
   padding: 6px 8px; border-radius: 6px; max-width: 260px; }
+.talk { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; margin-top: 10px; }
+.mood { border: 1px solid var(--line); border-radius: 8px; padding: 10px; min-width: 0; }
+.mood b { font: 600 12px var(--f-body); text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.mood ul { margin: 6px 0 0; padding: 0; list-style: none; display: grid; gap: 4px; }
+.mood li { font: 13px var(--f-mono); overflow-wrap: anywhere; }
+.mood li::before { content: "“"; color: var(--muted); } .mood li::after { content: "”"; color: var(--muted); }
 .pos { color: var(--accent); font-weight: 600; } .neg { color: var(--neg); font-weight: 600; }
 .act-big { font: 400 26px/1.1 var(--f-display); text-transform: lowercase; }
 .gallery { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; margin-top: 14px; }
@@ -173,6 +179,12 @@ h3 { font: 600 14px var(--f-body); margin: 16px 0 8px; }
         <p class="note">Pip is a squishy blob: it scoots to its bed to nap, its bowl to eat and its box to hide, and stretches and squashes as it jumps. The board does the same moves at e-paper speed (about 3 frames a second); here they're tweened smoothly. Click a small screen to make Pip do that action, or press BOOT or PWR to pet Pip, like on the real board.</p>
       </div>
     </div>
+  </section>
+
+  <section aria-labelledby="talk-h">
+    <h2 id="talk-h">What Pip says</h2>
+    <p class="wmeta" id="talk-meta">Pip's voice is a tiny language model that writes new sentences one letter at a time, right on the board.</p>
+    <div class="talk" id="talk"><span class="muted">Example sayings appear once the voice model has trained.</span></div>
   </section>
 
   <section aria-labelledby="pipe-h">
@@ -278,7 +290,7 @@ function renderProgress() {
   $("pct").textContent = s ? Math.round(frac * 100) + "%" : "–";
   $("step").textContent = s ? `Update ${done} of ${total}` : "Waiting for the first training run";
   const phase = { starting: "Starting up", training: "Learning in the simulated world", testing: "Writing the brain and testing personalities",
-    trained: "Checking the board's C code matches", done: "Finished", failed: "Something went wrong" }[s?.state] || "";
+    voice: "Teaching Pip to talk", trained: "Checking the board's C code matches", done: "Finished", failed: "Something went wrong" }[s?.state] || "";
   $("phase").textContent = phase + (s?.updated ? ` · last report ${ago(s.updated)}` : "");
   $("cells").innerHTML = Array.from({length: 30}, (_, i) => `<i class="${i < Math.round(frac * 30) ? "on" : ""}"></i>`).join("");
   $("elapsed").textContent = fmtDur(s?.elapsed_s);
@@ -342,7 +354,7 @@ function renderPipeline() {
   if (!s && !train) setStage("st-train", "s-idle", "No runs yet");
   else if (s?.state === "failed" || (train && train.status === "completed" && train.conclusion === "failure" && s?.state !== "done"))
     setStage("st-train", "s-bad", "Failed", "", train && { href: train.html_url, text: "logs" });
-  else if (["starting", "training", "testing"].includes(s?.state)) setStage("st-train", "s-run", "Training", `${s.update}/${s.total_updates}`, train && { href: train.html_url, text: "logs" });
+  else if (["starting", "training", "testing", "voice"].includes(s?.state)) setStage("st-train", "s-run", s.state === "voice" ? "Teaching to talk" : "Training", `${s.update}/${s.total_updates}`, train && { href: train.html_url, text: "logs" });
   else setStage("st-train", "s-ok", "Done", s?.updated ? ago(s.updated) : "", train && { href: train.html_url, text: "logs" });
   // 2 Test
   if (s?.c_test === "pass") setStage("st-test", "s-ok", "Match", "board code = trained brain");
@@ -363,7 +375,7 @@ function renderPipeline() {
   // Overall pill
   const el = $("overall");
   let cls = "s-idle", word = "Idle";
-  if (["starting", "training", "testing", "trained"].includes(s?.state)) { cls = "s-run"; word = "Training"; }
+  if (["starting", "training", "testing", "voice", "trained"].includes(s?.state)) { cls = "s-run"; word = s.state === "voice" ? "Learning to talk" : "Training"; }
   else if (build && build.status !== "completed") { cls = "s-run"; word = "Building"; }
   else if (s?.state === "failed" || s?.c_test === "fail") { cls = "s-bad"; word = "Needs attention"; }
   else if (s?.state === "done") { cls = "s-ok"; word = "Brain ready"; }
@@ -472,6 +484,16 @@ function epaper(ctx, st) {
     c.fillStyle = PAPER; c.fillRect(BOX_X - 15, cy + 1, 30, FLOOR_Y - cy - 1); c.fillStyle = INK;
     rect(BOX_X - 15, cy + 1, 30, FLOOR_Y - cy + 1); rect(BOX_X - 14, cy + 2, 28, FLOOR_Y - cy - 1);
   }
+  if (st.speech) {  // speech bubble above Pip, like the board's drawSpeech()
+    c.font = "8px Silkscreen, monospace";
+    const w = Math.round(c.measureText(st.speech).width) + 10, h = 13, tp = top - 5;
+    const x = Math.max(1, Math.min(199 - w, Math.round(st.x - w / 2))), y = Math.max(14, Math.round(tp - h - 7));
+    const tx = Math.max(x + 6, Math.min(x + w - 6, Math.round(st.x)));
+    rrect(x, y, w, h, 4, INK); rrect(x + 1, y + 1, w - 2, h - 2, 3, PAPER);
+    c.fillStyle = PAPER; c.beginPath(); c.moveTo(tx - 3, y + h - 2); c.lineTo(tx + 3, y + h - 2); c.lineTo(tx, y + h + 5); c.fill(); c.fillStyle = INK;
+    line(tx - 3, y + h - 1, tx, y + h + 5); line(tx + 3, y + h - 1, tx, y + h + 5);
+    text(st.speech, x + 5, y + 3, 8);
+  }
   center(walk ? "WALKING" : a.replace("_", " ").toUpperCase(), 111, 16);
   center(st.reason || why, 129, 8);
   ["FOOD", "ENERGY", "FUN", "COMFY", "LOVE"].forEach((lab, i) => {
@@ -487,7 +509,15 @@ function epaper(ctx, st) {
 // The same walk / perform / rest behaviour as the board, but tweened smoothly
 // between keyframes (the board can only redraw about 3 times a second).
 const pv = { x: 100, jump: 0, sq: 100, facing: 1, leg: 0, mode: "rest", target: 100, action: "idle", keys: null, kt: 0, hops: 0, restUntil: 0, phase: 0 };
-let pinned = null, lastT = 0;
+let pinned = null, lastT = 0, nextSayAt = 4000, sayUntil = 0;
+const ACTION_MOOD = { nap: "S", eat: "H", warm_up: "K", cool_down: "W", call: "L", play: "Y", explore: "C", sing: "J", hide: "X", idle: "J" };
+function sayLike(mood, ms) {
+  const list = status?.voice?.samples?.[mood];
+  if (!list?.length) return;
+  let t = list[Math.floor(Math.random() * list.length)] || "";
+  t = t.charAt(0).toUpperCase() + t.slice(1);
+  pv.speech = t; sayUntil = performance.now() + ms;
+}
 const reduceMotion = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
 const KEY_SEC = 0.13, WALK_SPEED = 30, SCOOT_SEC = 0.36;
 
@@ -542,6 +572,8 @@ function step(dt, now) {
   }
 }
 function tick(now) {
+  if (pv.speech && now > sayUntil) pv.speech = "";
+  if (now > nextSayAt && pv.mode === "rest" && !pv.speech) { sayLike(ACTION_MOOD[pv.action] || "J", 5000); nextSayAt = now + 7000 + Math.random() * 8000; }
   const dt = Math.min(.05, (now - (lastT || now)) / 1000); lastT = now;
   if (reduceMotion()) {
     if (!pinned && pv.mode === "rest" && now > pv.restUntil) startAction(pickAction());
@@ -709,6 +741,7 @@ function petPip(btn) {
   btn.classList.add("pressed"); setTimeout(() => btn.classList.remove("pressed"), 140);
   pv.reason = "Ooh, pats! <3";
   beginPerform("hop");
+  sayLike("P", 4000);
   $("pv-why").textContent = "You pressed " + btn.textContent.trim() + ". On the real board that counts as a pat: Pip hops, and its love bar goes up on its next thought.";
   clearTimeout(petPip._t); petPip._t = setTimeout(() => { pv.reason = ""; }, 4000);
 }
@@ -734,7 +767,23 @@ function renderRadars() {
   }).join("");
 }
 
-function render() { renderProgress(); renderChart(); renderMix(); renderNet(); renderWeights(); renderRadars(); renderPersonalities(); renderPipeline(); renderRuns(); }
+const MOOD_NAMES = { S: "asleep", H: "hungry", T: "tired", L: "lonely", B: "bored", K: "cold", W: "hot", N: "night", M: "morning",
+  P: "petted", C: "curious", Y: "playful", Z: "lazy", R: "brave", X: "shy", A: "affectionate", J: "happy" };
+function renderTalk() {
+  const v = status?.voice;
+  if (!v?.samples) return;
+  const prog = v.state === "training" ? ` · training step ${v.step} of ${v.total}` : "";
+  const loss = v.loss?.length ? ` · loss ${v.loss.at(-1)}` : "";
+  const novel = v.novel_fraction != null ? ` · ${Math.round(v.novel_fraction * 100)}% of its sentences are new, not copied from its examples` : "";
+  $("talk-meta").textContent = `Pip's voice is a tiny language model${v.params ? ` (${v.params.toLocaleString()} numbers)` : ""} that writes new sentences one letter at a time, right on the board${prog}${loss}${novel}.`;
+  $("talk").innerHTML = Object.entries(v.samples).map(([m, list]) => `<div class="mood"><b>${MOOD_NAMES[m] || m}</b><ul>${
+    list.map(t => `<li></li>`).join("")}</ul></div>`).join("");
+  // fill text safely (the model's words are data, not HTML)
+  const boxes = $("talk").querySelectorAll(".mood");
+  Object.values(v.samples).forEach((list, i) => boxes[i].querySelectorAll("li").forEach((li, j) => li.textContent = list[j] || "(nothing)"));
+}
+
+function render() { renderTalk(); renderProgress(); renderChart(); renderMix(); renderNet(); renderWeights(); renderRadars(); renderPersonalities(); renderPipeline(); renderRuns(); }
 buildGallery();
 document.fonts?.ready.then(buildGallery);
 loopPreview();
@@ -743,7 +792,7 @@ loopPreview();
 // The runs list and download link use GitHub's API, which allows only ~60 calls
 // an hour per network, so those are checked every 3 minutes at most.
 let apiNextAt = 0, apiBlockedUntil = 0, apiNote = "";
-const isBusy = () => ["starting", "training", "testing", "trained"].includes(status?.state) || runs.some(r => r.status !== "completed");
+const isBusy = () => ["starting", "training", "testing", "voice", "trained"].includes(status?.state) || runs.some(r => r.status !== "completed");
 
 async function fetchStatus() {
   const r = await fetch(`https://raw.githubusercontent.com/${REPO}/status/status.json?t=${Date.now()}`, { cache: "no-store" });

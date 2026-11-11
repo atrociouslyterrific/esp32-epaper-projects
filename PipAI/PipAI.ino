@@ -29,6 +29,7 @@
 #include <sys/time.h>
 #include "pip_world.h"
 #include "pip_brain.h"
+#include "pip_voice.h"   // Pip's generative voice (trained by training/train_voice.py)
 
 // ---- Board pins (from Waveshare's example code) ----
 const int EPD_PWR = 6, EPD_BUSY = 8, EPD_RST = 9, EPD_DC = 10, EPD_CS = 11, EPD_SCK = 12, EPD_MOSI = 13;
@@ -62,7 +63,8 @@ int redrawCount = 0;
 bool needRedraw = false;
 bool haveSensor = false, haveRtc = false, clockSet = false;
 
-struct Key { int8_t y; uint8_t sq; };  // animation keyframe: height above floor, squash %
+struct Key { int8_t y; uint8_t sq; };
+struct LineSet { const char **lines; int n; };  // a list of fallback phrases  // animation keyframe: height above floor, squash %
 
 #define LOG_LEN 8
 struct LogEntry { int action; int hour, minute; };
@@ -657,8 +659,10 @@ void animTick() {
 // ================================================================ talking
 // Every few minutes Pip says something that fits the moment: how it feels, the
 // time of day, the temperature, whether you just petted it, and its personality.
+// The words are GENERATED on the board by a tiny language model (pip_voice.h),
+// so Pip comes up with new sentences rather than repeating a list.
 
-char speech[40] = "";
+char speech[40] = "";  // up to 31 characters fit in the bubble
 unsigned long speechUntil = 0, nextSpeechAt = 30000;
 
 static const char *L_SLEEP[]   = {"zzz... berries...", "mmm... five more mins", "*snore*", "zzz... boing..."};
@@ -680,45 +684,74 @@ static const char *L_CUDDLY[]  = {"You're my favourite!", "Hug?", "Love you lots
 static const char *L_HAPPY[]   = {"Blub!", "I'm a happy blob", "Wiggle wiggle", "What a nice day"};
 #define LINES(a) a, (int)(sizeof(a) / sizeof(a[0]))
 
-struct LineSet { const char **lines; int n; };
+// Fallback phrases, used only if the voice model writes something in the wrong format.
+LineSet fallbackFor(char mood) {
+  switch (mood) {
+    case 'S': return {LINES(L_SLEEP)};   case 'H': return {LINES(L_HUNGRY)};  case 'T': return {LINES(L_TIRED)};
+    case 'L': return {LINES(L_LONELY)};  case 'B': return {LINES(L_BORED)};   case 'K': return {LINES(L_COLD)};
+    case 'W': return {LINES(L_HOT)};     case 'N': return {LINES(L_NIGHT)};   case 'M': return {LINES(L_MORNING)};
+    case 'P': return {LINES(L_PETTED)};  case 'C': return {LINES(L_CURIOUS)}; case 'Y': return {LINES(L_PLAYFUL)};
+    case 'Z': return {LINES(L_LAZY)};    case 'R': return {LINES(L_BRAVE)};   case 'X': return {LINES(L_SHY)};
+    case 'A': return {LINES(L_CUDDLY)};  default:  return {LINES(L_HAPPY)};
+  }
+}
 
-void sayFrom(const char **lines, int n, unsigned long ms) {
-  snprintf(speech, sizeof(speech), "%s", lines[esp_random() % n]);
+float voiceRand01() { return esp_random() / 4294967296.0f; }
+
+// Pip writes a brand-new sentence for this mood with its voice model, one letter at a time.
+void speak(char mood, unsigned long ms) {
+  // Whatever the model writes is shown, as long as it's a proper sentence:
+  // not empty, finished before running off the bubble, and only normal characters
+  // (lowercase letters, spaces and ! ? . , ' ~ * < 3), not mood codes.
+  const int MAX_CHARS = 31;  // the widest bubble that fits on the 200-pixel screen
+  char text[MAX_CHARS + 2];
+  bool ok = false;
+  for (int attempt = 0; attempt < 5 && !ok; attempt++) {
+    int n = pv_generate(mood, text, MAX_CHARS + 1, 0.75f, voiceRand01);
+    ok = n >= 1 && n <= MAX_CHARS;
+    for (int i = 0; ok && i < n; i++) ok = strchr("abcdefghijklmnopqrstuvwxyz !?.,'~*<3", text[i]) != nullptr;
+  }
+  if (!ok) {
+    LineSet f = fallbackFor(mood);
+    snprintf(text, sizeof(text), "%s", f.lines[esp_random() % f.n]);
+  } else if (text[0] >= 'a' && text[0] <= 'z') {
+    text[0] -= 32;  // capital first letter
+  }
+  snprintf(speech, sizeof(speech), "%s", text);
   speechUntil = millis() + ms;
   needRedraw = true;
-  Serial.printf("Pip says: \"%s\"\n", speech);
+  Serial.printf("Pip says (%c%s): \"%s\"\n", mood, ok ? "" : ", fallback", speech);
 }
 
 void speakSomething() {
-  LineSet pick[12];
+  char moods[12];
   int n = 0;
   bool night = clockSet && (senses.hour >= 22 || senses.hour < 6);
   bool morning = clockSet && senses.hour >= 6 && senses.hour < 10;
-  if (action == A_NAP) { sayFrom(LINES(L_SLEEP), 20000); return; }
+  if (action == A_NAP) { speak('S', 20000); return; }
   // Things Pip is feeling right now come first...
-  if (pip.food < 0.3f) pick[n++] = {LINES(L_HUNGRY)};
-  if (pip.energy < 0.3f) pick[n++] = {LINES(L_TIRED)};
-  if (pip.social < 0.3f) pick[n++] = {LINES(L_LONELY)};
-  if (pip.fun < 0.3f) pick[n++] = {LINES(L_BORED)};
-  if (haveSensor && senses.tempC < 18) pick[n++] = {LINES(L_COLD)};
-  if (haveSensor && senses.tempC > 27) pick[n++] = {LINES(L_HOT)};
-  if (night) pick[n++] = {LINES(L_NIGHT)};
-  if (morning) pick[n++] = {LINES(L_MORNING)};
-  // ...otherwise its personality talks (or just happy blob noises)
+  if (pip.food < 0.3f) moods[n++] = 'H';
+  if (pip.energy < 0.3f) moods[n++] = 'T';
+  if (pip.social < 0.3f) moods[n++] = 'L';
+  if (pip.fun < 0.3f) moods[n++] = 'B';
+  if (haveSensor && senses.tempC < 18) moods[n++] = 'K';
+  if (haveSensor && senses.tempC > 27) moods[n++] = 'W';
+  if (night) moods[n++] = 'N';
+  if (morning) moods[n++] = 'M';
+  // ...otherwise its personality talks (or it's just a happy blob)
   if (n == 0 || esp_random() % 3 == 0) {
-    if (traits.curious > 0.6f) pick[n++] = {LINES(L_CURIOUS)};
-    if (traits.playful > 0.6f) pick[n++] = {LINES(L_PLAYFUL)};
-    if (traits.lazy > 0.6f) pick[n++] = {LINES(L_LAZY)};
-    if (traits.brave > 0.7f) pick[n++] = {LINES(L_BRAVE)};
-    if (traits.brave < 0.3f) pick[n++] = {LINES(L_SHY)};
-    if (traits.affectionate > 0.6f) pick[n++] = {LINES(L_CUDDLY)};
-    pick[n++] = {LINES(L_HAPPY)};
+    if (traits.curious > 0.6f) moods[n++] = 'C';
+    if (traits.playful > 0.6f) moods[n++] = 'Y';
+    if (traits.lazy > 0.6f) moods[n++] = 'Z';
+    if (traits.brave > 0.7f) moods[n++] = 'R';
+    if (traits.brave < 0.3f) moods[n++] = 'X';
+    if (traits.affectionate > 0.6f) moods[n++] = 'A';
+    moods[n++] = 'J';
   }
-  LineSet s = pick[esp_random() % n];
-  sayFrom(s.lines, s.n, 20000);
+  speak(moods[esp_random() % n], 20000);
 }
 
-void sayPetted() { sayFrom(LINES(L_PETTED), 8000); }
+void sayPetted() { speak('P', 8000); }
 
 // Run from loop(): start talking now and then, and stop when the bubble's time is up.
 void speechTick() {

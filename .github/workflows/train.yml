@@ -1,6 +1,6 @@
 name: Train Pip brain
 
-# Trains Pip's neural network on GitHub's computers (never on your Mac),
+# Trains Pip's neural network and its voice model on GitHub's computers (never on your Mac),
 # checks the C version matches, and saves the trained brain into PipAI/pip_brain.h.
 on:
   push:
@@ -38,7 +38,7 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           git update-index --chmod=+x training/push_status.sh 2>/dev/null; chmod +x training/push_status.sh
-          python training/train.py &
+          (python training/train.py && python training/train_voice.py) &
           TRAIN_PID=$!
           while kill -0 $TRAIN_PID 2>/dev/null; do
             sleep 20
@@ -54,6 +54,10 @@ jobs:
           set +e
           ./test_world training/out/trajectory.txt | tee test.txt
           result=${PIPESTATUS[0]}
+          gcc -O2 -I PipAI training/test_voice.c -lm -o test_voice
+          ./test_voice training/out/voice_test.txt | tee -a test.txt
+          vresult=${PIPESTATUS[0]}
+          [ "$result" = 0 ] && result=$vresult
           set -e
           python - "$result" <<'EOF'
           import json, sys
@@ -92,13 +96,14 @@ jobs:
           path: |
             training/out/
             PipAI/pip_brain.h
+            PipAI/pip_voice.h
 
       - name: Save the trained brain to the repo
         run: |
           cp training/out/report.md training/personality_report.md
           git config user.name "github-actions[bot]"
           git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
-          git add PipAI/pip_brain.h training/personality_report.md
+          git add PipAI/pip_brain.h PipAI/pip_voice.h training/personality_report.md
           git diff --cached --quiet && exit 0
           git commit -m "Update Pip's trained brain"
           # Other commits may have landed while training ran: rebase and retry.
