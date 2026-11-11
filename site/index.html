@@ -618,9 +618,11 @@ function epaper(ctx, st) {
   rect(BOX_X - 15, 84, 30, 22); line(BOX_X - 15, 84, BOX_X - 21, 77); line(BOX_X + 14, 84, BOX_X + 19, 77);
 
   if (st.snack != null) {  // a berry, like drawSnack() on the board
-    const sx = st.snack, sy = FLOOR_Y - 5;
+    const sx = st.snack, sy = Math.round(FLOOR_Y - 5 - (st.snackY || 0));
     fillC(sx, sy, 4); px(sx - 1, sy - 2, PAPER); line(sx, sy - 4, sx + 2, sy - 8);
     c.beginPath(); c.moveTo(sx + 2, sy - 8); c.lineTo(sx + 6, sy - 9); c.lineTo(sx + 4, sy - 6); c.fill();
+    if (st.falling && st.snackV > 60) for (let i = -1; i <= 1; i++) line(sx + i * 4, sy - 12, sx + i * 4, sy - 12 - Math.min(18, st.snackV / 12));  // speed lines
+    if (st.thudUntil > performance.now()) { line(sx - 9, FLOOR_Y - 2, sx - 6, FLOOR_Y - 4); line(sx + 9, FLOOR_Y - 2, sx + 6, FLOOR_Y - 4); }
   }
   // Pip the blob (same geometry as drawPip() in PipAI.ino)
   const sq = st.sq || 100, rx = BLOB_RX * sq / 100, ry = BLOB_RY * 100 / sq;
@@ -735,14 +737,29 @@ function beginPerform(keyName) {
 function dropSnack() {
   if (pv.snack != null) return;  // one snack at a time
   do { pv.snack = randX(16, 184); } while (Math.abs(pv.snack - pv.x) < 20);
-  pv.eating = true; pv.action = "eat"; pv.hops = 0; pv.reason = "A snack! For me?!";
-  pv.target = Math.max(16, Math.min(184, pv.snack + (pv.snack > pv.x ? -14 : 14)));
-  pv.mode = "walk"; pv.phase = 0;
+  pv.eating = true; pv.action = "eat"; pv.hops = 0; pv.reason = "Something's falling!";
+  pv.snackY = FLOOR_Y - 5 - 20; pv.snackV = 0; pv.falling = true;   // drops from the top of the room
+  pv.mode = "rest"; pv.restUntil = Infinity; pv.jump = 0; pv.facing = pv.snack > pv.x ? 1 : -1;
   $("pv-act").textContent = "snack!";
   $("pv-why").textContent = "You pressed BOOT, so a berry dropped into the room. Pip scoots over and eats it, which fills its food bar and counts as attention from you.";
 }
 const ease = t => t < .5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2;
 function step(dt, now) {
+  if (pv.falling) {  // gravity, then a couple of bounces, then Pip goes for it
+    pv.snackV += 700 * dt;
+    pv.snackY -= pv.snackV * dt;
+    if (pv.snackY <= 0) {
+      pv.snackY = 0;
+      pv.thudUntil = now + 250;
+      if (pv.snackV > 90) pv.snackV = -pv.snackV * 0.35;
+      else {
+        pv.falling = false; pv.snackV = 0; pv.reason = "A snack! For me?!";
+        pv.target = Math.max(16, Math.min(184, pv.snack + (pv.snack > pv.x ? -14 : 14)));
+        pv.mode = "walk"; pv.phase = 0;
+      }
+    }
+    return;
+  }
   if (pv.mode === "walk") {
     // scoot: stretch forward with a little hop, squash on landing, repeat
     const dx = pv.target - pv.x; pv.facing = dx > 0 ? 1 : -1;
@@ -778,7 +795,7 @@ function tick(now) {
   if (pv.speech && now > sayUntil) pv.speech = "";
   if (now > nextSayAt && pv.mode === "rest" && !pv.speech) { sayLike(ACTION_MOOD[pv.action] || "J", 5000); nextSayAt = now + 7000 + Math.random() * 8000; }
   const dt = Math.min(.05, (now - (lastT || now)) / 1000); lastT = now;
-  if (reduceMotion()) {
+  if (reduceMotion() && !pv.falling && !pv.eating) {
     if (!pinned && pv.mode === "rest" && now > pv.restUntil) startAction(pickAction());
     if (pv.mode !== "rest") { pv.x = pv.target; pv.jump = 0; pv.sq = 100; pv.mode = "rest"; pv.restUntil = now + 5000; }
   } else step(dt, now);

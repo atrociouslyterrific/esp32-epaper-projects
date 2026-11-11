@@ -772,8 +772,8 @@ void drawPip(int a, bool sad) {
 }
 
 // ---- snacks: tap BOOT and a berry drops into the room; Pip scoots over and eats it
-int snackX = -1, snackDropY = 0;
-bool eatingSnack = false;
+int snackX = -1, snackDropY = 0, snackFallSpeed = 0, snackBounces = 0;
+bool eatingSnack = false, snackFalling = false;
 unsigned long snackCount = 0;
 
 void drawSnack() {
@@ -783,19 +783,51 @@ void drawSnack() {
   display.drawPixel(snackX - 1, y - 2, GxEPD_WHITE);           // shine
   display.drawLine(snackX, y - 4, snackX + 2, y - 8, GxEPD_BLACK);  // stem
   display.fillTriangle(snackX + 2, y - 8, snackX + 6, y - 9, snackX + 4, y - 6, GxEPD_BLACK);  // leaf
+  if (snackFalling && snackDropY > 8) {  // speed lines while it falls
+    for (int i = -1; i <= 1; i++) display.drawLine(snackX + i * 4, y - 12, snackX + i * 4, y - 12 - min(18, snackFallSpeed), GxEPD_BLACK);
+  }
+  if (snackFalling && snackDropY == 0) {  // a little "thud" on landing
+    display.drawLine(snackX - 9, FLOOR_Y - 2, snackX - 6, FLOOR_Y - 4, GxEPD_BLACK);
+    display.drawLine(snackX + 9, FLOOR_Y - 2, snackX + 6, FLOOR_Y - 4, GxEPD_BLACK);
+  }
+}
+
+// One frame of the snack falling from the top of the room (it speeds up, then bounces).
+// Returns true while it's still falling.
+bool snackFallFrame() {
+  if (!snackFalling) return false;
+  if (snackDropY > 0) {
+    snackDropY = max(0, snackDropY - snackFallSpeed);
+    snackFallSpeed += 9;                       // gravity
+  } else if (snackBounces < 2) {
+    snackDropY = snackBounces == 0 ? 6 : 2;    // bounce, then a smaller bounce
+    snackFallSpeed = 6;
+    snackBounces++;
+  } else {
+    snackFalling = false;                      // landed: now Pip notices and scoots over
+    snprintf(reason, sizeof(reason), "A snack! For me?!");
+    targetX = constrain(snackX + (snackX > pipX ? -14 : 14), 16, 184);
+    exploreHops = 0;
+    animMode = AN_WALK;
+  }
+  return true;
 }
 
 void dropSnack() {
   if (snackX >= 0) return;  // one snack at a time
   do { snackX = randomX(16, 184); } while (abs(snackX - pipX) < 20);
-  snackDropY = 0;
+  snackDropY = FLOOR_Y - 5 - 20;   // starts at the top of the room
+  snackFallSpeed = 6;
+  snackBounces = 0;
+  snackFalling = true;
   eatingSnack = true;
   touchedPending = true;  // being fed counts as attention from you
   action = A_EAT;
-  snprintf(reason, sizeof(reason), "A snack! For me?!");
-  exploreHops = 0;
-  targetX = constrain(snackX + (snackX > pipX ? -14 : 14), 16, 184);
-  animMode = AN_WALK;
+  snprintf(reason, sizeof(reason), "Something's falling!");
+  animMode = AN_REST;     // Pip waits and watches until it lands
+  pipJump = 0;
+  squash = 100;
+  facing = snackX > pipX ? 1 : -1;
   nextFrameAt = millis();
   needRedraw = true;
 }
@@ -977,6 +1009,12 @@ void ambient() {
 
 // Run from loop(): advance the animation when it's time.
 void animTick() {
+  if (snackFalling) {
+    if (millis() < nextFrameAt) return;
+    if (snackFallFrame()) needRedraw = true;
+    nextFrameAt = millis();
+    return;
+  }
   if (animMode == AN_REST) { ambient(); return; }
   if (millis() < nextFrameAt) return;
   if (animFrame()) needRedraw = true;
