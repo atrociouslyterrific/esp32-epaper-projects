@@ -85,6 +85,31 @@ td.cell { font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
 .dot { width: 10px; height: 10px; border-radius: 50%; background: currentColor; }
 .runs .t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .note { font-size: 13px; color: var(--muted); }
+
+/* e-paper preview: a little model of the Waveshare board */
+.stagebox { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 24px; align-items: start; }
+.device { background: #2B2E2C; border-radius: 18px; padding: 16px 16px 10px; width: max-content; max-width: 100%;
+  box-shadow: inset 0 0 0 2px #3A3E3B; }
+.bezel { background: #DADBD5; padding: 8px; border-radius: 4px; }
+#epd { display: block; width: 216px; height: 216px; max-width: 100%; image-rendering: pixelated; background: #E8E8E2; }
+.buttons { display: flex; justify-content: space-between; margin-top: 8px; font: 10px var(--f-mono); color: #9AA09B; }
+.buttons span::before { content: ""; display: inline-block; width: 14px; height: 6px; border-radius: 3px; background: #4A4F4B; margin-right: 6px; vertical-align: middle; }
+.act-big { font: 400 26px/1.1 var(--f-display); text-transform: lowercase; }
+.gallery { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; margin-top: 14px; }
+.gallery button { all: unset; cursor: pointer; display: grid; gap: 4px; justify-items: center; font: 11px var(--f-mono); color: var(--muted); }
+.gallery canvas { width: 100%; max-width: 72px; aspect-ratio: 1; image-rendering: pixelated; border: 1px solid var(--line); border-radius: 4px; background: #E8E8E2; }
+.gallery button[aria-pressed="true"] canvas { outline: 2px solid var(--accent); outline-offset: 1px; }
+.gallery button:focus-visible canvas { outline: 2px solid var(--accent); }
+@media (max-width: 620px) { .stagebox { grid-template-columns: 1fr; } .device { margin: 0 auto; } }
+
+.net text { font: 11px var(--f-mono); fill: var(--muted); }
+.net .lbl { fill: var(--ink); }
+.radars { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 14px; }
+.radar { border: 1px solid var(--line); border-radius: 8px; padding: 10px; display: grid; gap: 4px; justify-items: center; min-width: 0; }
+.radar svg { width: 100%; max-width: 150px; height: auto; }
+.radar svg text { font: 9px var(--f-mono); fill: var(--muted); }
+.radar b { font-weight: 600; font-size: 13px; text-align: center; }
+.radar small { color: var(--muted); font-size: 12px; text-align: center; }
 .err { color: var(--bad); }
 </style>
 </head>
@@ -114,6 +139,22 @@ td.cell { font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
     </div>
   </section>
 
+  <section aria-labelledby="live-h">
+    <h2 id="live-h">Pip, as the current brain would act</h2>
+    <div class="stagebox">
+      <div class="device" aria-hidden="true">
+        <div class="bezel"><canvas id="epd" width="200" height="200"></canvas></div>
+        <div class="buttons"><span>BOOT</span><span>PWR</span></div>
+      </div>
+      <div class="livetext">
+        <div class="act-big" id="pv-act">–</div>
+        <p id="pv-why" class="muted">Pip acts out what the brain picks most often. It changes every few seconds.</p>
+        <div class="gallery" id="gallery" aria-label="Every action Pip can take"></div>
+        <p class="note">The preview is drawn the same way the board draws its 200 × 200 black-and-white e-paper screen. Click a small screen to see that action.</p>
+      </div>
+    </div>
+  </section>
+
   <section aria-labelledby="pipe-h">
     <h2 id="pipe-h">From training to your board</h2>
     <div class="pipeline">
@@ -135,8 +176,15 @@ td.cell { font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
     <div class="mix" id="mix"><span class="muted">No data yet.</span></div>
   </section>
 
+  <section aria-labelledby="net-h">
+    <h2 id="net-h">Inside Pip's brain</h2>
+    <div class="scroll"><svg class="chart net" id="net" viewBox="0 0 820 420" role="img" aria-label="Neural network diagram: 34 inputs, two hidden layers of 48, 10 actions"></svg></div>
+    <p class="note">Every sense and feeling on the left connects to every neuron in the next layer, 4,522 learned numbers in total. Training adjusts those numbers. On the right, each action's circle grows with how often the brain currently picks it.</p>
+  </section>
+
   <section aria-labelledby="pers-h">
     <h2 id="pers-h">Does personality change behaviour?</h2>
+    <div class="radars" id="radars"></div>
     <div class="scroll"><table id="pers"><tbody><tr><td class="muted">Appears when training finishes.</td></tr></tbody></table></div>
     <p class="note">% of time each personality spends on each action over 3 simulated days. If personality works, the rows should look different from each other.</p>
   </section>
@@ -294,7 +342,166 @@ function renderRuns() {
     <span class="muted mono">${runWord(r)} · ${ago(r.updated_at)}</span></li>`).join("");
 }
 
-function render() { renderProgress(); renderChart(); renderMix(); renderPersonalities(); renderPipeline(); renderRuns(); }
+// ------------------------------------------------------------ e-paper Pip (port of the board's drawing code)
+const INK = "#111", PAPER = "#E8E8E2";
+const EXAMPLES = {
+  idle: ["Life is good", [.8, .7, .6, .9, .7]], nap: ["It's night-time, zzz", [.7, .25, .6, .8, .6]],
+  eat: ["My tummy is rumbling!", [.3, .7, .6, .8, .6]], explore: ["What's over there?", [.7, .7, .35, .8, .6]],
+  play: ["Bouncing around for fun", [.7, .6, .4, .8, .7]], sing: ["La la la~", [.7, .7, .6, .8, .4]],
+  hide: ["Feeling shy...", [.7, .7, .6, .45, .6]], warm_up: ["Brr, it's cold in here", [.7, .6, .6, .3, .6]],
+  cool_down: ["Phew, it's hot!", [.7, .5, .6, .35, .6]], call: ["Hello? Anyone there?", [.7, .7, .6, .8, .2]],
+};
+
+function epaper(ctx, action) {
+  const c = ctx;
+  c.save(); c.fillStyle = PAPER; c.fillRect(0, 0, 200, 200);
+  c.fillStyle = INK; c.strokeStyle = INK; c.lineWidth = 1; c.textBaseline = "top";
+  const fillC = (x, y, r, col = INK) => { c.fillStyle = col; c.beginPath(); c.arc(x, y, r, 0, 7); c.fill(); c.fillStyle = INK; };
+  const ring = (x, y, r) => { c.beginPath(); c.arc(x, y, r, 0, 7); c.stroke(); };
+  const line = (a, b, d, e) => { c.beginPath(); c.moveTo(a + .5, b + .5); c.lineTo(d + .5, e + .5); c.stroke(); };
+  const arc = (cx, cy, hw, curve, thick) => { for (let t = 0; t < thick; t++) { c.beginPath();
+    for (let x = -hw; x <= hw; x++) { const k = 1 - (x * x) / (hw * hw); const y = cy + t + Math.trunc(curve * k);
+      x === -hw ? c.moveTo(cx + x + .5, y + .5) : c.lineTo(cx + x + .5, y + .5); } c.stroke(); } };
+  const text = (s, x, y, size) => { c.font = `${size}px Silkscreen, monospace`; c.fillText(s, x, y); };
+  const center = (s, y, size) => { c.font = `${size}px Silkscreen, monospace`; c.fillText(s, (200 - c.measureText(s).width) / 2, y); };
+  const [why, needs] = EXAMPLES[action] || EXAMPLES.idle;
+  const sad = Math.min(...needs) < .25;
+
+  text("Pip: curious & cuddly", 2, 2, 8); line(0, 12, 199, 12);
+  // Pip (same geometry as drawPip() in PipAI.ino)
+  let cx = 80; const cy = 62, r = 28;
+  if (action === "warm_up") cx += 2;
+  c.beginPath(); c.roundRect(cx - 20, cy + r - 5, 13, 10, 4); c.roundRect(cx + 7, cy + r - 5, 13, 10, 4); c.fill();
+  fillC(cx, cy, r); fillC(cx, cy, r - 3, PAPER);
+  line(cx, cy - r, cx + 4, cy - r - 10); line(cx + 1, cy - r, cx + 5, cy - r - 10); fillC(cx + 6, cy - r - 12, 4);
+  const ey = cy - 5, el = cx - 10, er = cx + 10;
+  const note = (x, y) => { fillC(x, y, 3); line(x + 3, y, x + 3, y - 12); line(x + 3, y - 12, x + 8, y - 9); };
+  switch (action) {
+    case "nap": arc(el, ey, 5, 3, 2); arc(er, ey, 5, 3, 2); fillC(cx, cy + 12, 2);
+      text("z", cx + r + 2, cy - r + 4, 8); text("Z", cx + r + 8, cy - r - 12, 16); break;
+    case "eat": fillC(el, ey, 4); fillC(er, ey, 4); fillC(cx, cy + 11, 6); fillC(cx + r + 10, cy + 8, 7);
+      line(cx + r + 10, cy + 1, cx + r + 13, cy - 4); break;
+    case "explore": fillC(el, ey, 5); fillC(er, ey, 5); fillC(el + 2, ey, 2, PAPER); fillC(er + 2, ey, 2, PAPER);
+      arc(cx + 2, cy + 12, 6, 0, 2); text("?", cx + r + 6, cy - 16, 16); break;
+    case "play": arc(el, ey + 2, 5, -4, 2); arc(er, ey + 2, 5, -4, 2); arc(cx, cy + 8, 11, 7, 3);
+      ring(cx + r + 12, cy + 18, 8); line(cx + r + 4, cy + 18, cx + r + 20, cy + 18); break;
+    case "sing": arc(el, ey + 2, 5, -3, 2); arc(er, ey + 2, 5, -3, 2); ring(cx, cy + 12, 4);
+      note(cx + r + 6, cy - 4); note(cx + r + 16, cy - 16); break;
+    case "warm_up": fillC(el, ey, 4); fillC(er, ey, 4); arc(cx, cy + 12, 8, 2, 2);
+      for (let i = 0; i < 3; i++) { line(cx - r - 10, cy - 8 + i * 8, cx - r - 4, cy - 10 + i * 8); line(cx + r + 4, cy - 10 + i * 8, cx + r + 10, cy - 8 + i * 8); } break;
+    case "cool_down": fillC(el, ey, 4); fillC(er, ey, 4); arc(cx, cy + 12, 8, -2, 2);
+      c.beginPath(); c.moveTo(cx + r - 4, cy - r + 2); c.lineTo(cx + r - 8, cy - r + 10); c.lineTo(cx + r, cy - r + 10); c.fill();
+      fillC(cx + r - 4, cy - r + 11, 4); break;
+    case "call": fillC(el, ey, 5); fillC(er, ey, 5); fillC(cx, cy + 12, 5);
+      c.beginPath(); c.roundRect(cx + r + 4, cy - r - 4, 16, 22, 4); c.fill();
+      c.fillStyle = PAPER; text("!", cx + r + 8, cy - r, 16); c.fillStyle = INK; break;
+    default: fillC(el, ey, 5); fillC(er, ey, 5); fillC(el + 2, ey - 2, 2, PAPER); fillC(er + 2, ey - 2, 2, PAPER);
+      if (action !== "hide") arc(cx, cy + 10, 9, sad ? -4 : 4, 3);
+  }
+  if (action === "hide") {
+    c.fillStyle = PAPER; c.fillRect(cx - r - 8, cy + 2, 2 * r + 16, r + 8); c.fillStyle = INK;
+    c.strokeRect(cx - r - 7.5, cy + 2.5, 2 * r + 15, r + 7); c.strokeRect(cx - r - 6.5, cy + 3.5, 2 * r + 13, r + 5);
+    line(cx - r - 8, cy + 2, cx - r - 16, cy - 6); line(cx + r + 8, cy + 2, cx + r + 16, cy - 6);
+  }
+  center(action.replace("_", " ").toUpperCase(), 106, 16);
+  center(why, 126, 8);
+  ["FOOD", "ENERGY", "FUN", "COMFY", "LOVE"].forEach((lab, i) => {
+    const y = 150 + i * 10; text(lab, 4, y, 8); c.strokeRect(50.5, y + .5, 145, 7); c.fillRect(52, y + 2, Math.round(142 * needs[i]), 4);
+  });
+  // Snap to pure black and white like real e-paper
+  const img = c.getImageData(0, 0, 200, 200), d = img.data;
+  for (let i = 0; i < d.length; i += 4) { const v = (d[i] + d[i + 1] + d[i + 2]) / 3 < 150 ? 17 : 232;
+    d[i] = d[i + 1] = v; d[i + 2] = v === 232 ? 226 : 17; d[i + 3] = 255; }
+  c.putImageData(img, 0, 0); c.restore();
+}
+
+let pinned = null, previewTimer = null;
+function pickAction() {
+  const m = status?.action_mix;
+  if (!m || !m.length) return ACTIONS[(Math.floor(Date.now() / 3000)) % ACTIONS.length];
+  let r = Math.random(), acc = 0;
+  for (let i = 0; i < m.length; i++) { acc += m[i]; if (r < acc) return ACTIONS[i]; }
+  return ACTIONS[m.length - 1];
+}
+function showPreview(action) {
+  epaper($("epd").getContext("2d", { willReadFrequently: true }), action);
+  const m = status?.action_mix, i = ACTIONS.indexOf(action);
+  $("pv-act").textContent = action.replace("_", " ");
+  $("pv-why").textContent = m ? `The brain picks “${action.replace("_", " ")}” ${(m[i] * 100).toFixed(0)}% of the time right now. “${EXAMPLES[action][0]}”`
+    : `“${EXAMPLES[action][0]}”`;
+  document.querySelectorAll(".gallery button").forEach(b => b.setAttribute("aria-pressed", b.dataset.a === action));
+}
+function buildGallery() {
+  $("gallery").innerHTML = ACTIONS.map(a => `<button type="button" data-a="${a}" aria-pressed="false"><canvas width="200" height="200"></canvas>${a.replace("_", " ")}</button>`).join("");
+  document.querySelectorAll(".gallery button").forEach(b => {
+    epaper(b.querySelector("canvas").getContext("2d", { willReadFrequently: true }), b.dataset.a);
+    b.addEventListener("click", () => { pinned = b.dataset.a; showPreview(pinned); clearTimeout(previewTimer);
+      previewTimer = setTimeout(() => { pinned = null; cyclePreview(); }, 12000); });
+  });
+}
+function cyclePreview() {
+  if (!pinned) showPreview(pickAction());
+  clearTimeout(previewTimer);
+  previewTimer = setTimeout(cyclePreview, matchMedia("(prefers-reduced-motion: reduce)").matches ? 10000 : 3500);
+}
+
+// ------------------------------------------------------------ network diagram
+const GROUPS = [["needs", 5], ["temp & humidity", 2], ["time of day", 2], ["sound", 1], ["battery", 2], ["your touch", 1],
+  ["tilt", 4], ["something changed", 1], ["personality", 5], ["last action", 10], ["repeating", 1]];
+function renderNet() {
+  const svg = $("net"), Wd = 820, Ht = 420, T = 14, B = 14;
+  const cols = [{ n: 34, x: 260 }, { n: 48, x: 430 }, { n: 48, x: 580 }, { n: 10, x: 700 }];
+  const ys = col => Array.from({ length: col.n }, (_, i) => T + (i + .5) * (Ht - T - B) / col.n);
+  const pts = cols.map(ys);
+  let out = "";
+  for (let k = 0; k < 3; k++) {
+    let d = ""; for (const y1 of pts[k]) for (const y2 of pts[k + 1]) d += `M${cols[k].x},${y1.toFixed(1)}L${cols[k + 1].x},${y2.toFixed(1)}`;
+    out += `<path d="${d}" stroke="var(--accent)" stroke-width=".35" opacity="${k === 2 ? .18 : .08}" fill="none"/>`;
+  }
+  pts.slice(0, 3).forEach((col, k) => col.forEach(y => out += `<circle cx="${cols[k].x}" cy="${y}" r="${k ? 2.6 : 3}" fill="var(--card)" stroke="var(--ink)" stroke-width="1"/>`));
+  // input group labels with brackets
+  let i0 = 0;
+  for (const [name, n] of GROUPS) {
+    const y1 = pts[0][i0] - 4, y2 = pts[0][i0 + n - 1] + 4, ym = (y1 + y2) / 2;
+    out += `<path d="M246,${y1}h-4v${y2 - y1}h4" stroke="var(--muted)" fill="none"/>`;
+    out += `<text x="236" y="${ym + 4}" text-anchor="end" class="lbl">${name}</text>`;
+    i0 += n;
+  }
+  const m = status?.action_mix || Array(10).fill(.1);
+  pts[3].forEach((y, i) => {
+    out += `<circle cx="${cols[3].x}" cy="${y}" r="${(3 + 13 * Math.sqrt(m[i])).toFixed(1)}" fill="var(--accent)" opacity=".85"/>`;
+    out += `<text x="${cols[3].x + 22}" y="${y + 4}" class="lbl">${ACTIONS[i].replace("_", " ")}</text>`;
+    out += `<text x="${Wd - 8}" y="${y + 4}" text-anchor="end">${status?.action_mix ? (m[i] * 100).toFixed(0) + "%" : ""}</text>`;
+  });
+  [["34 senses &amp; feelings", 0], ["48 neurons", 1], ["48 neurons", 2], ["10 actions", 3]].forEach(([t, k]) =>
+    out += `<text x="${cols[k].x}" y="${Ht - 1}" text-anchor="middle">${t}</text>`);
+  svg.innerHTML = out;
+}
+
+// ------------------------------------------------------------ personality shapes
+function renderRadars() {
+  const p = status?.personalities;
+  if (!p) { $("radars").innerHTML = ""; return; }
+  const axes = ["curious", "playful", "lazy", "brave", "cuddly"];
+  $("radars").innerHTML = p.rows.map(r => {
+    const R = 46, cx = 75, cy = 64;
+    const pt = (i, v) => { const a = -Math.PI / 2 + i * 2 * Math.PI / 5; return [cx + Math.cos(a) * R * v, cy + Math.sin(a) * R * v]; };
+    const ring = v => axes.map((_, i) => pt(i, v).map(n => n.toFixed(1)).join(",")).join(" ");
+    const poly = r.traits.map((v, i) => pt(i, v).map(n => n.toFixed(1)).join(",")).join(" ");
+    const labels = axes.map((a, i) => { const [x, y] = pt(i, 1.28); return `<text x="${x}" y="${y + 3}" text-anchor="middle">${a}</text>`; }).join("");
+    const top = r.pct.map((v, i) => [v, p.actions[i]]).sort((a, b) => b[0] - a[0]).slice(0, 2)
+      .map(([v, a]) => `${a.replace("_", " ")} ${Math.round(v)}%`).join(", ");
+    return `<div class="radar"><svg viewBox="0 0 150 130" aria-hidden="true">
+      <polygon points="${ring(1)}" fill="none" stroke="var(--line)"/><polygon points="${ring(.5)}" fill="none" stroke="var(--line)"/>
+      <polygon points="${poly}" fill="var(--accent)" fill-opacity=".3" stroke="var(--accent)" stroke-width="1.5"/>${labels}</svg>
+      <b>${r.name}</b><small>mostly ${top}</small></div>`;
+  }).join("");
+}
+
+function render() { renderProgress(); renderChart(); renderMix(); renderNet(); renderRadars(); renderPersonalities(); renderPipeline(); renderRuns(); }
+buildGallery();
+document.fonts?.ready.then(() => { buildGallery(); cyclePreview(); });
+cyclePreview();
 
 async function poll() {
   clearTimeout(nextTimer);
