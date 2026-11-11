@@ -41,6 +41,7 @@ int energy = 80;   // 0..100
 bool asleep = false;
 unsigned long ageMinutes = 0;
 
+enum Mood { HAPPY, OKAY, SAD, SLEEPING };
 enum Action { FEED, PLAY, SLEEP, ACTION_COUNT };
 const char *ACTION_NAMES[ACTION_COUNT] = {"FEED", "PLAY", "SLEEP"};
 int selected = FEED;
@@ -71,8 +72,6 @@ void loadState() {
 }
 
 // ---------- Mood ----------
-enum Mood { HAPPY, OKAY, SAD, SLEEPING };
-
 Mood currentMood() {
   if (asleep) return SLEEPING;
   int lowest = min(food, min(fun, energy));
