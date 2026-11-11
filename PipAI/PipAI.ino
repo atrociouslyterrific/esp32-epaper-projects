@@ -391,7 +391,7 @@ void diarySaid(const char *text) {
 }
 
 // ================================================================ updating itself over Wi-Fi
-// Every 6 hours Pip asks GitHub for the newest version number. If it's newer than this
+// Every 2 hours Pip asks GitHub for the newest version number. If it's newer than this
 // program, it downloads the update over HTTPS (checked against GitHub's real
 // certificates, see pip_github_roots.h), installs it into the spare slot and restarts.
 const char *UPDATE_BASE = "https://github.com/atrociouslyterrific/esp32-epaper-projects/releases/download/latest/";
@@ -444,7 +444,7 @@ void checkForUpdate() {
 
 void updateTick() {
   if (millis() < nextUpdateCheck) return;
-  nextUpdateCheck = millis() + 6UL * 60 * 60 * 1000;  // then every 6 hours (GitHub trains every 6 hours)
+  nextUpdateCheck = millis() + 2UL * 60 * 60 * 1000;  // then every 2 hours (GitHub trains every 2 hours)
   checkForUpdate();
 }
 
