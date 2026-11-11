@@ -207,7 +207,7 @@ h3 { font: 600 14px var(--f-body); margin: 16px 0 8px; }
     <div class="wmeta" id="wmeta">Loading weights…</div>
     <h3>Which senses push Pip toward each action</h3>
     <div class="scroll"><canvas id="w-influence" class="heat"></canvas></div>
-    <p class="note">A rough guide made by multiplying the three layers together, ignoring the bends (tanh) in between. A teal square means that input makes the action more likely; orange means less likely.</p>
+    <p class="note">Hover over any square to see its exact number. A rough guide made by multiplying the three layers together, ignoring the bends (tanh) in between. A teal square means that input makes the action more likely; orange means less likely.</p>
     <div class="wgrid">
       <div class="wcard"><h3>Layer 1 · senses → 48 neurons</h3><div class="scroll"><canvas id="w-1" class="heat"></canvas></div></div>
       <div class="wcard"><h3>Layer 2 · 48 → 48 neurons</h3><div class="scroll"><canvas id="w-2" class="heat"></canvas></div></div>
@@ -686,7 +686,8 @@ function renderWeights() {
   const actionNames = ACTIONS.map(a => a.replace("_", " "));
   const influence = matMul(matMul(brain.W3, brain.W2), brain.W1);  // 10 x 34
   drawHeat($("w-influence"), influence, { cell: 16, rowLabels: actionNames, colLabels: INPUT_NAMES, labelW: 80, labelH: 104 });
-  drawHeat($("w-1"), brain.W1, { cell: 6, colLabels: INPUT_NAMES, labelH: 104, rowName: "neuron A", colName: "input" });
+  drawHeat($("w-1"), brain.W1, { cell: 6, rowName: "neuron A", colName: "input" });
+  $("w-1")._hit.colLabels = INPUT_NAMES;  // names show on hover
   drawHeat($("w-2"), brain.W2, { cell: 5, rowName: "neuron B", colName: "neuron A" });
   drawHeat($("w-3"), brain.W3, { cell: 6, rowLabels: actionNames, labelW: 70, rowName: "action", colName: "neuron B" });
   // Histogram
