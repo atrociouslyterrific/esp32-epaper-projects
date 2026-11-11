@@ -3,6 +3,11 @@ name: Build sketches
 on:
   push:
     branches-ignore: [status]
+    paths:  # only when a program's code changes (website/training pushes don't need a build)
+      - "EpaperHello/**"
+      - "EpaperPet/**"
+      - "PipAI/**"
+      - ".github/workflows/build.yml"
   pull_request:
   workflow_dispatch:
   workflow_run:  # rebuild after a new brain is trained
@@ -12,8 +17,11 @@ on:
 permissions:
   contents: write  # lets the build publish the "latest" download
 
+# One build at a time. A newer waiting build replaces an older waiting one, but a
+# build that's already running is never cancelled.
 concurrency:
-  group: build-${{ github.run_id }}
+  group: build
+  cancel-in-progress: false
 
 env:
   # min_spiffs = two 1.9 MB program slots, so Pip can download an update into the
