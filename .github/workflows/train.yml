@@ -89,7 +89,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: training-output
-          path: training/out/
+          path: |
+            training/out/
+            PipAI/pip_brain.h
 
       - name: Save the trained brain to the repo
         run: |
@@ -99,4 +101,9 @@ jobs:
           git add PipAI/pip_brain.h training/personality_report.md
           git diff --cached --quiet && exit 0
           git commit -m "Update Pip's trained brain"
-          git push
+          # Other commits may have landed while training ran: rebase and retry.
+          for i in 1 2 3 4 5; do
+            git pull --rebase -X theirs origin main && git push && exit 0
+            sleep 5
+          done
+          exit 1
