@@ -26,7 +26,7 @@ permissions:
 # (renamed from "train": runs left over from GitHub's earlier outage are stuck in that group)
 concurrency:
   group: train-v2
-  cancel-in-progress: true
+  cancel-in-progress: false  # a run that's due waits for the current one instead of cancelling it
 
 jobs:
   train:
