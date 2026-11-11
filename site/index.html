@@ -189,6 +189,24 @@ h3 { font: 600 14px var(--f-body); margin: 16px 0 8px; }
     </div>
   </section>
 
+  <section aria-labelledby="lm-h">
+    <h2 id="lm-h">Language model progress</h2>
+    <div class="now">
+      <div class="big num" id="lm-pct">–</div>
+      <div><div id="lm-step" class="mono">Waiting for the brain to finish</div>
+        <div class="muted" id="lm-phase">Pip's voice trains right after its brain.</div></div>
+      <div class="cells" id="lm-cells" aria-hidden="true"></div>
+      <div class="facts">
+        <span>Elapsed <b id="lm-elapsed">–</b></span>
+        <span>Time left <b id="lm-eta">–</b></span>
+        <span>Loss <b id="lm-loss">–</b></span>
+        <span>Version <b id="lm-ver">–</b></span>
+      </div>
+    </div>
+    <h3>What it's writing right now</h3>
+    <div class="talk" id="lm-now"><span class="muted">Sentences appear every 100 training steps.</span></div>
+  </section>
+
   <section aria-labelledby="live-h">
     <h2 id="live-h">Pip, as the current brain would act</h2>
     <div class="stagebox">
@@ -390,6 +408,31 @@ function lineChart(svg, series, opts) {
     (opts.dots ? pts.map(p => `<circle cx="${X(p.x)}" cy="${Y(p.y)}" r="4" fill="${p.kept === "old" ? "var(--warn)" : "var(--accent)"}"/>`).join("") : "") +
     `<circle cx="${X(last.x)}" cy="${Y(last.y)}" r="4.5" fill="var(--accent)"/>` +
     `<text x="${Math.min(X(last.x) + 8, W - R - 40)}" y="${Y(last.y) - 8}" fill="var(--ink)">${last.y.toFixed(opts.dp ?? 3)}</text>`;
+}
+
+function renderLanguagePanel() {
+  const v = status?.voice || {}, s = status;
+  const brainBusy = ["starting", "training", "testing"].includes(s?.state);
+  const done = ["trained", "done"].includes(v.state);
+  const frac = v.total ? Math.min(1, (v.step || 0) / v.total) : (done ? 1 : 0);
+  const active = v.state === "training" || v.state === "starting";
+  $("lm-pct").textContent = (active || done) ? Math.round(frac * 100) + "%" : "–";
+  $("lm-step").textContent = active ? `Step ${v.step || 0} of ${v.total || "?"}` : done ? `Finished (${v.total || "?"} steps)` :
+    brainBusy ? "Waiting for the brain to finish" : "Not training right now";
+  $("lm-phase").textContent = active ? "Reading example sentences and learning to guess the next letter" :
+    done ? (v.kept === "old" ? "Done. The new version wasn't better, so the old voice was kept" : "Done. This voice goes into the next PipAI.bin") :
+    brainBusy ? "Pip's voice trains right after its brain." : "";
+  $("lm-cells").innerHTML = Array.from({ length: 30 }, (_, i) => `<i class="${i < Math.round(frac * 30) ? "on" : ""}"></i>`).join("");
+  $("lm-elapsed").textContent = v.elapsed_s != null ? fmtDur(v.elapsed_s) : "–";
+  $("lm-eta").textContent = active && v.step ? fmtDur(v.elapsed_s / v.step * (v.total - v.step)) : done ? fmtDur(0) : "–";
+  $("lm-loss").textContent = v.loss?.length ? `${v.loss.at(-1)}${v.loss.length > 1 ? (v.loss.at(-1) < v.loss.at(-2) ? " ↓" : " ↑") : ""}` : "–";
+  $("lm-ver").textContent = v.version != null ? "v" + v.version : (s?.mode === "continue" ? "continuing" : s?.mode === "scratch" ? "new" : "–");
+  const samp = v.samples;
+  if (!samp) return;
+  const pick = ["P", "H", "J", "C", "S", "A"].filter(m => samp[m]?.length);
+  $("lm-now").innerHTML = pick.map(m => `<div class="mood"><b>${MOOD_NAMES[m] || m}</b><ul>${samp[m].slice(0, 2).map(() => "<li></li>").join("")}</ul></div>`).join("");
+  const boxes = $("lm-now").querySelectorAll(".mood");
+  pick.forEach((m, i) => boxes[i].querySelectorAll("li").forEach((li, j) => li.textContent = samp[m][j] || "(nothing)"));
 }
 
 function renderVoiceProgress() {
@@ -1023,7 +1066,7 @@ $("vgo").addEventListener("click", writeSentence);
 $("vtemp").addEventListener("input", e => $("vtemp-val").textContent = (+e.target.value).toFixed(2));
 ["v-ih", "v-o", "v-hr", "v-hz", "v-hn"].forEach(id => attachTip($(id)));
 
-function render() { renderRunLine(); renderVoiceProgress(); renderHistory(); renderVoiceWeights(); renderTalk(); renderProgress(); renderChart(); renderMix(); renderNet(); renderWeights(); renderRadars(); renderPersonalities(); renderPipeline(); renderRuns(); }
+function render() { renderRunLine(); renderLanguagePanel(); renderVoiceProgress(); renderHistory(); renderVoiceWeights(); renderTalk(); renderProgress(); renderChart(); renderMix(); renderNet(); renderWeights(); renderRadars(); renderPersonalities(); renderPipeline(); renderRuns(); }
 buildGallery();
 document.fonts?.ready.then(buildGallery);
 loopPreview();
