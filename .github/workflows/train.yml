@@ -23,8 +23,9 @@ on:
 permissions:
   contents: write
 
+# (renamed from "train": runs left over from GitHub's earlier outage are stuck in that group)
 concurrency:
-  group: train
+  group: train-v2
   cancel-in-progress: true
 
 jobs:
