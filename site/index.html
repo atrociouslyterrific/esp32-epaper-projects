@@ -53,6 +53,14 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outlin
 .cells { display: grid; grid-template-columns: repeat(30, 1fr); gap: 3px; grid-column: 1 / -1; margin-top: 10px; }
 .cells i { height: 14px; border-radius: 2px; background: var(--line); }
 .cells i.on { background: var(--ink); }
+.runline { grid-column: 1 / -1; font-size: 14px; }
+.runline b { font-weight: 600; }
+.vprog { grid-column: 1 / -1; display: grid; grid-template-columns: 56px 1fr auto; gap: 10px; align-items: center; margin-top: 6px; }
+.vlabel { font-weight: 600; font-size: 13px; }
+.vbar { height: 10px; border-radius: 3px; background: var(--line); overflow: hidden; }
+.vbar span { display: block; height: 100%; width: 0; background: var(--ink); transition: width .4s; }
+.hist-table td, .hist-table th { font-size: 12px; }
+.kept-new { color: var(--ok); font-weight: 600; } .kept-old { color: var(--warn); font-weight: 600; }
 .facts { display: flex; flex-wrap: wrap; gap: 8px 24px; grid-column: 1 / -1; color: var(--muted); }
 .facts b { color: var(--ink); font-weight: 500; font-family: var(--f-mono); }
 
@@ -166,6 +174,12 @@ h3 { font: 600 14px var(--f-body); margin: 16px 0 8px; }
       <div><div id="step" class="mono">Waiting for the first training run</div>
         <div class="muted" id="phase"></div></div>
       <div class="cells" id="cells" aria-hidden="true"></div>
+      <div class="runline" id="runline"></div>
+      <div class="vprog">
+        <span class="vlabel">Voice</span>
+        <div class="vbar"><span id="vbar"></span></div>
+        <span class="mono" id="vstep">waiting for the brain</span>
+      </div>
       <div class="facts">
         <span>Elapsed <b id="elapsed">–</b></span>
         <span>Time left <b id="eta">–</b></span>
@@ -214,6 +228,19 @@ h3 { font: 600 14px var(--f-body); margin: 16px 0 8px; }
     <h2 id="rw-h">How happy Pip is getting</h2>
     <svg class="chart" id="chart" viewBox="0 0 820 260" role="img" aria-label="Average reward per training update"></svg>
     <p class="note">Each point is one training update (32,768 simulated 3-minute steps). Reward is how well Pip's needs are met, plus enjoying activities that fit its personality. Higher means a happier Pip. The thick line is a 10-update average.</p>
+  </section>
+
+  <section aria-labelledby="vl-h">
+    <h2 id="vl-h">How well Pip is learning to talk</h2>
+    <svg class="chart" id="vchart" viewBox="0 0 820 220" role="img" aria-label="Voice model loss during training"></svg>
+    <p class="note">The voice model's loss: how surprised it is by the next letter in its example sentences. Lower is better. It drops fast at first, then levels off as Pip's sentences start making sense.</p>
+  </section>
+
+  <section aria-labelledby="hist-h">
+    <h2 id="hist-h">Night by night</h2>
+    <svg class="chart" id="hchart" viewBox="0 0 820 220" role="img" aria-label="Brain test score for each training run"></svg>
+    <div class="scroll"><table class="hist-table" id="htable"><tbody><tr><td class="muted">The history starts with the next training run.</td></tr></tbody></table></div>
+    <p class="note">Every night GitHub continues training from the last version, then tests the new brain and voice against the old ones on the same test worlds and sentences. The new one is kept only if it does at least as well. Brain score: higher is better. Voice loss: lower is better.</p>
   </section>
 
   <section aria-labelledby="mix-h">
@@ -341,6 +368,70 @@ function niceTicks(lo, hi, n) {
   const step = [1, 2, 2.5, 5, 10].map(k => k * mag).find(k => k >= step0);
   const ticks = []; for (let v = Math.ceil(lo / step) * step; v <= hi + 1e-9; v += step) ticks.push(+v.toFixed(6));
   return ticks;
+}
+
+function lineChart(svg, series, opts) {
+  const W = 820, H = +svg.getAttribute("viewBox").split(" ")[3], L = 56, R = 14, T = 14, B = 34;
+  const pts = series.filter(p => p.y != null && isFinite(p.y));
+  if (pts.length < 2) { svg.innerHTML = `<text x="${W / 2}" y="${H / 2}" text-anchor="middle">${opts.empty}</text>`; return; }
+  const xs = pts.map(p => p.x), ys = pts.map(p => p.y);
+  let x0 = Math.min(...xs), x1 = Math.max(...xs); if (x1 === x0) x1 = x0 + 1;
+  let lo = Math.min(...ys), hi = Math.max(...ys); const pad = (hi - lo) * 0.1 || 0.05; lo -= pad; hi += pad;
+  const yt = niceTicks(lo, hi, 4); lo = Math.min(lo, yt[0]); hi = Math.max(hi, yt.at(-1));
+  const X = x => L + (x - x0) / (x1 - x0) * (W - L - R), Y = y => T + (1 - (y - lo) / (hi - lo)) * (H - T - B);
+  const xt = (opts.xticks || niceTicks(x0, x1, 6)).filter(v => v >= x0 && v <= x1);
+  const d = pts.map((p, i) => `${i ? "L" : "M"}${X(p.x).toFixed(1)},${Y(p.y).toFixed(1)}`).join("");
+  const last = pts.at(-1);
+  svg.innerHTML =
+    yt.map(v => `<line x1="${L}" x2="${W - R}" y1="${Y(v)}" y2="${Y(v)}" stroke="var(--line)"/><text x="${L - 8}" y="${Y(v) + 4}" text-anchor="end">${v.toFixed(opts.dp ?? 2)}</text>`).join("") +
+    xt.map(v => `<text x="${X(v)}" y="${H - 12}" text-anchor="middle">${opts.xfmt ? opts.xfmt(v) : v}</text>`).join("") +
+    `<text x="${W - R}" y="${H - 1}" text-anchor="end">${opts.xlabel}</text>` +
+    `<path d="${d}" fill="none" stroke="var(--accent)" stroke-width="2.5"/>` +
+    (opts.dots ? pts.map(p => `<circle cx="${X(p.x)}" cy="${Y(p.y)}" r="4" fill="${p.kept === "old" ? "var(--warn)" : "var(--accent)"}"/>`).join("") : "") +
+    `<circle cx="${X(last.x)}" cy="${Y(last.y)}" r="4.5" fill="var(--accent)"/>` +
+    `<text x="${Math.min(X(last.x) + 8, W - R - 40)}" y="${Y(last.y) - 8}" fill="var(--ink)">${last.y.toFixed(opts.dp ?? 3)}</text>`;
+}
+
+function renderVoiceProgress() {
+  const v = status?.voice || {};
+  const pct = v.total ? Math.min(1, (v.step || 0) / v.total) : (["trained", "done"].includes(v.state) ? 1 : 0);
+  $("vbar").style.width = (pct * 100).toFixed(1) + "%";
+  $("vstep").textContent = v.state === "training" ? `step ${v.step} of ${v.total}` :
+    ["trained", "done"].includes(v.state) ? `done${v.test_loss != null ? ` · test loss ${v.test_loss}` : ""}` :
+    status?.state === "voice" ? "starting" : "waiting for the brain";
+  const loss = v.loss || [];
+  lineChart($("vchart"), loss.map((y, i) => ({ x: Math.min(i * 100 + 1, v.total || i * 100 + 1), y })),
+    { empty: "Appears once the voice starts training", xlabel: "training step", dp: 2 });
+}
+
+function renderRunLine() {
+  const s = status; if (!s) { $("runline").textContent = ""; return; }
+  const parts = [];
+  if (s.mode === "continue") parts.push(`<b>Continuing</b> from brain v${s.from_version}`);
+  else if (s.mode === "scratch") parts.push(`<b>Training from scratch</b> (no saved version yet)`);
+  if (s.brain_version != null && s.kept) {
+    parts.push(s.kept === "new"
+      ? `<span class="kept-new">new brain v${s.brain_version} kept</span>${s.old_score != null ? ` (score ${s.score} vs old ${s.old_score})` : ` (score ${s.score})`}`
+      : `<span class="kept-old">old brain kept</span> (new one scored lower)`);
+  }
+  const v = s.voice || {};
+  if (v.version != null && v.kept) parts.push(v.kept === "new" ? `<span class="kept-new">voice v${v.version} kept</span>` : `<span class="kept-old">old voice kept</span>`);
+  $("runline").innerHTML = parts.join(" · ");
+}
+
+function renderHistory() {
+  const h = status?.history || [];
+  lineChart($("hchart"), h.map((e, i) => ({ x: i + 1, y: e.score, kept: e.brain_kept })),
+    { empty: "The chart starts after two training runs", xlabel: "training run", dp: 3, dots: true, xticks: h.map((_, i) => i + 1) });
+  if (!h.length) return;
+  const fmtDate = d => d ? new Date(d).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "";
+  $("htable").innerHTML = `<thead><tr><th>Run</th><th>When</th><th>How</th><th>Brain</th><th>Score</th><th>Voice</th><th>Voice loss</th><th>Check</th></tr></thead><tbody>` +
+    h.map((e, i) => `<tr><td>${i + 1}</td><td>${fmtDate(e.date)}</td><td>${e.mode === "continue" ? "continued" : "from scratch"}</td>
+      <td class="${e.brain_kept === "old" ? "kept-old" : "kept-new"}">v${e.brain_version ?? "?"}${e.brain_kept === "old" ? " (old kept)" : ""}</td>
+      <td class="cell">${e.score ?? "–"}${e.old_score != null ? ` <span class="muted">vs ${e.old_score}</span>` : ""}</td>
+      <td class="${e.voice_kept === "old" ? "kept-old" : "kept-new"}">v${e.voice_version ?? "?"}${e.voice_kept === "old" ? " (old kept)" : ""}</td>
+      <td class="cell">${e.voice_loss ?? "–"}${e.old_voice_loss != null ? ` <span class="muted">vs ${e.old_voice_loss}</span>` : ""}</td>
+      <td>${e.c_test === "pass" ? "✓" : "✗"}</td></tr>`).reverse().join("") + "</tbody>";
 }
 
 function renderChart() {
@@ -932,7 +1023,7 @@ $("vgo").addEventListener("click", writeSentence);
 $("vtemp").addEventListener("input", e => $("vtemp-val").textContent = (+e.target.value).toFixed(2));
 ["v-ih", "v-o", "v-hr", "v-hz", "v-hn"].forEach(id => attachTip($(id)));
 
-function render() { renderVoiceWeights(); renderTalk(); renderProgress(); renderChart(); renderMix(); renderNet(); renderWeights(); renderRadars(); renderPersonalities(); renderPipeline(); renderRuns(); }
+function render() { renderRunLine(); renderVoiceProgress(); renderHistory(); renderVoiceWeights(); renderTalk(); renderProgress(); renderChart(); renderMix(); renderNet(); renderWeights(); renderRadars(); renderPersonalities(); renderPipeline(); renderRuns(); }
 buildGallery();
 document.fonts?.ready.then(buildGallery);
 loopPreview();

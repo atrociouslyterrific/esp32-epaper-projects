@@ -53,6 +53,12 @@ jobs:
           gh release download checkpoints -R "${{ github.repository }}" -D training/ckpt -p 'brain.pt' -p 'voice.pt' \
             && ls -la training/ckpt || echo "No checkpoints yet - training from scratch"
 
+      - name: Get the training history so far
+        run: |
+          mkdir -p training/out
+          curl -sf "https://raw.githubusercontent.com/${{ github.repository }}/status/status.json" -o training/out/prev_status.json \
+            || echo "{}" > training/out/prev_status.json
+
       - name: Train (live progress goes to the status website)
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -87,6 +93,15 @@ jobs:
           s["c_test"] = "pass" if sys.argv[1] == "0" else "fail"
           s["c_test_detail"] = open("test.txt").read().strip()
           s["state"] = "done" if sys.argv[1] == "0" else "failed"
+          v = s.get("voice", {})
+          s.setdefault("history", []).append({
+              "date": s.get("updated"), "mode": s.get("mode"), "commit": s.get("commit"),
+              "brain_version": s.get("brain_version"), "brain_kept": s.get("kept"),
+              "score": s.get("score"), "old_score": s.get("old_score"),
+              "voice_version": v.get("version"), "voice_kept": v.get("kept"),
+              "voice_loss": v.get("test_loss"), "old_voice_loss": v.get("old_test_loss"),
+              "c_test": s["c_test"]})
+          s["history"] = s["history"][-60:]
           json.dump(s, open(p, "w"))
           EOF
           training/push_status.sh

@@ -305,8 +305,13 @@ def personality_report(actor, path):
 
 if __name__ == "__main__":
     os.makedirs(OUT, exist_ok=True)
+    try:  # night-by-night history from the previous run (downloaded by the workflow)
+        STATUS["history"] = json.load(open(os.path.join(OUT, "prev_status.json"))).get("history", [])[-60:]
+    except Exception:
+        STATUS["history"] = []
     write_status(state="training")
     ck = load_checkpoint()
+    write_status(mode="continue" if ck else "scratch", from_version=ck["gen"] if ck else 0)
     actor, critic, opt = train(ck)
     gen = (ck["gen"] + 1) if ck else 1
     # Keep the new brain only if it's at least as good as the old one (same test worlds, current rules)
