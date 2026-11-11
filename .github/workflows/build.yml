@@ -100,6 +100,10 @@ jobs:
     if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.event_name == 'workflow_run')
     runs-on: ubuntu-24.04-arm  # ARM pool: the x64 ubuntu-latest/24.04 runners stopped picking up jobs (Nov 2026)
     steps:
+      - uses: actions/checkout@v4   # to read the brain and voice version numbers
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && 'main' || '' }}
+          path: repo
       - uses: actions/download-artifact@v4
         with:
           merge-multiple: true
@@ -115,3 +119,22 @@ jobs:
           # version number before the matching program is there to download.
           gh release upload latest *.bin --clobber
           if [ -f PipAI.version ]; then gh release upload latest PipAI.version --clobber; fi
+
+      - name: Label the release and add PipAI.bin to this version's archive
+        if: hashFiles('PipAI.version') != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          FW=$(cat PipAI.version)
+          B=$(grep -oP 'PIP_BRAIN_VERSION \K[0-9]+' repo/PipAI/pip_brain.h || echo 0)
+          V=$(grep -oP 'PV_VOICE_VERSION \K[0-9]+' repo/PipAI/pip_voice.h || echo 0)
+          # The website reads this line to show which version is on GitHub right now
+          gh release edit latest --notes "PipAI version $FW · brain v$B · voice v$V · built $(date -u +%Y-%m-%dT%H:%M:%SZ)
+          Flash PipAI.bin with https://espressif.github.io/esptool-js/ at address 0x0. Pip also downloads new versions by itself over Wi-Fi."
+          TAG="pip-b$B-v$V"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            cp PipAI.bin "PipAI-v$FW.bin"
+            gh release upload "$TAG" "PipAI-v$FW.bin" --clobber
+            echo "Added PipAI-v$FW.bin to $TAG"
+          fi

@@ -19,6 +19,10 @@ on:
         description: "Start from scratch instead of continuing from the last version"
         type: boolean
         default: false
+      from_version:
+        description: "Continue from a saved version instead of the newest, e.g. pip-b3-v3 (leave empty for newest)"
+        type: string
+        default: ""
 
 permissions:
   contents: write
@@ -51,6 +55,12 @@ jobs:
         run: |
           mkdir -p training/ckpt
           if [ "${{ github.event.inputs.fresh }}" = "true" ]; then echo "Starting fresh as requested"; exit 0; fi
+          FROM="${{ github.event.inputs.from_version }}"
+          if [ -n "$FROM" ]; then
+            echo "Continuing from saved version $FROM"
+            gh release download "$FROM" -R "${{ github.repository }}" -D training/ckpt -p 'brain.pt' -p 'voice.pt'
+            exit 0
+          fi
           gh release download checkpoints -R "${{ github.repository }}" -D training/ckpt -p 'brain.pt' -p 'voice.pt' \
             && ls -la training/ckpt || echo "No checkpoints yet - training from scratch"
 
@@ -95,7 +105,17 @@ jobs:
           s["c_test_detail"] = open("test.txt").read().strip()
           s["state"] = "done" if sys.argv[1] == "0" else "failed"
           v = s.get("voice", {})
-          s.setdefault("history", []).append({
+          # All-time totals across every training run
+          t = s.setdefault("totals", {})
+          this = {"brain_updates": s.get("update") or 0, "brain_seconds": s.get("elapsed_s") or 0,
+                  "voice_steps": v.get("step") or 0, "voice_seconds": v.get("elapsed_s") or 0,
+                  "sim_minutes": s.get("sim_minutes") or 0, "chars_read": v.get("chars_read") or 0}
+          for k, val in this.items():
+              t[k] = t.get(k, 0) + val
+          t["runs"] = t.get("runs", 0) + 1
+          t.setdefault("first_run", s.get("started"))
+          t["last_run"] = s.get("updated")
+          s.setdefault("history", []).append({**this,
               "date": s.get("updated"), "mode": s.get("mode"), "commit": s.get("commit"),
               "brain_version": s.get("brain_version"), "brain_kept": s.get("kept"),
               "score": s.get("score"), "old_score": s.get("old_score"),
@@ -143,6 +163,31 @@ jobs:
             gh release create checkpoints -R "${{ github.repository }}" --prerelease --title "Training checkpoints" \
               --notes "Saved brain and voice models so nightly training continues where it left off. Not for flashing."
           gh release upload checkpoints -R "${{ github.repository }}" training/out/ckpt/brain.pt training/out/ckpt/voice.pt --clobber
+
+      - name: Archive this version (its own release, so it can be flashed or trained from later)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'EOF' > archive.env
+          import json
+          s = json.load(open("training/out/status.json")); v = s.get("voice", {})
+          kept_something_new = s.get("kept") == "new" or v.get("kept") == "new"
+          print(f"B={s.get('brain_version')}")
+          print(f"V={v.get('version')}")
+          print(f"NEW={'yes' if kept_something_new else 'no'}")
+          print(f"SCORE={s.get('score')}")
+          print(f"LOSS={v.get('test_loss')}")
+          EOF
+          . ./archive.env
+          if [ "$NEW" != "yes" ]; then echo "Nothing new was kept this time - no new archive"; exit 0; fi
+          TAG="pip-b$B-v$V"
+          gh release view "$TAG" -R "${{ github.repository }}" >/dev/null 2>&1 || \
+            gh release create "$TAG" -R "${{ github.repository }}" --prerelease --title "Pip brain v$B · voice v$V" \
+              --notes "Saved version of Pip. Brain test score $SCORE (higher is better), voice test loss $LOSS (lower is better). Trained $(date -u +%Y-%m-%dT%H:%MZ) by run ${{ github.run_id }}. PipAI.bin is added when it has been built. To keep training from this version: Actions > Train Pip brain > Run workflow > from_version = $TAG"
+          cp training/out/report.md personality_report.md
+          gh release upload "$TAG" -R "${{ github.repository }}" --clobber \
+            training/out/ckpt/brain.pt training/out/ckpt/voice.pt PipAI/pip_brain.h PipAI/pip_voice.h personality_report.md
+          echo "Archived as $TAG"
 
       - name: Save the trained brain to the repo
         run: |

@@ -145,6 +145,7 @@ def train(ck=None):
             loss_hist.append(round(float(loss), 4))
             ex = samples(model, np.random.default_rng(step), per_mood=2)
             update_status(state="training", step=step + 1, total=steps, loss=loss_hist, samples=ex,
+                          chars_read=(step + 1) * BATCH * SEQ,
                           elapsed_s=round(time.time() - start))
             print(f"voice step {step:5d}  loss {float(loss):.3f}  e.g. P>{ex['P'][0]!r}  H>{ex['H'][0]!r}", flush=True)
     model.eval()

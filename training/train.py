@@ -167,6 +167,7 @@ def train(ck=None):
                                  "W1": r3(actor.l1.weight), "b1": [round(float(v), 3) for v in actor.l1.bias.detach()],
                                  "W2": r3(actor.l2.weight), "b2": [round(float(v), 3) for v in actor.l2.bias.detach()],
                                  "W3": r3(actor.l3.weight), "b3": [round(float(v), 3) for v in actor.l3.bias.detach()]}
+        STATUS["sim_minutes"] = (update + 1) * ENVS * ROLLOUT * 3  # simulated Pip-minutes in this run
         write_status(state="training", update=update + 1, elapsed_s=round(time.time() - start),
                      action_mix=[round(float(m), 4) for m in mix])
         if update % 10 == 0 or update == updates - 1:
@@ -306,7 +307,9 @@ def personality_report(actor, path):
 if __name__ == "__main__":
     os.makedirs(OUT, exist_ok=True)
     try:  # night-by-night history from the previous run (downloaded by the workflow)
-        STATUS["history"] = json.load(open(os.path.join(OUT, "prev_status.json"))).get("history", [])[-60:]
+        prev = json.load(open(os.path.join(OUT, "prev_status.json")))
+        STATUS["history"] = prev.get("history", [])[-60:]
+        STATUS["totals"] = prev.get("totals", {})
     except Exception:
         STATUS["history"] = []
     write_status(state="training")
