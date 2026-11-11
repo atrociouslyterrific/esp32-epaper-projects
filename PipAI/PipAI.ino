@@ -8,7 +8,8 @@
 // how it behaves. Everything runs on the board; no internet AI, no API keys.
 //
 // On screen Pip lives in a little room: it walks to its bed to nap, to its bowl
-// to eat, into its box to hide, wanders when exploring and jumps when it plays.
+// to eat, into its box to hide, wanders when exploring, jumps when it plays,
+// dances, and gazes out of the window.
 //
 // Every few minutes Pip says something in a speech bubble.
 //
@@ -41,6 +42,11 @@
 #ifndef PIP_FW_VERSION
 #define PIP_FW_VERSION 0
 #endif
+
+// The trained brain must fit this version of Pip's world (same senses, same actions).
+// If not, stop the build: GitHub retrains the brain and builds again afterwards.
+static_assert(PIP_N_IN == PIP_N_FEATURES, "pip_brain.h was trained for a different set of senses - retrain");
+static_assert(PIP_N_OUT == PIP_N_ACTIONS, "pip_brain.h was trained for a different set of actions - retrain");
 #ifndef PIP_BRAIN_VERSION
 #define PIP_BRAIN_VERSION 0
 #endif
@@ -232,6 +238,13 @@ void explain(int a) {
       r = senses.battery < 0.3f && !senses.charging ? "My battery is low! Charge me?" :
           pip.social < 0.4f ? "Hello? Anyone there?" : "Hey! Over here!";
       break;
+    case A_DANCE:
+      r = pip.touchRecent > 0.3f ? "Dancing for you!" : traits.playful > 0.6f ? "Can't stop the groove" : "Dance break!";
+      break;
+    case A_WINDOW:
+      r = (clockSet && (senses.hour >= 20 || senses.hour < 7)) ? "Looking at the moon" :
+          traits.curious > 0.6f ? "What's out there?" : "Watching the sky";
+      break;
     default:
       r = pip.comfort > 0.7f ? "Life is good" : "Just hanging out";
   }
@@ -378,7 +391,7 @@ void diarySaid(const char *text) {
 }
 
 // ================================================================ updating itself over Wi-Fi
-// Once a day Pip asks GitHub for the newest version number. If it's newer than this
+// Every 6 hours Pip asks GitHub for the newest version number. If it's newer than this
 // program, it downloads the update over HTTPS (checked against GitHub's real
 // certificates, see pip_github_roots.h), installs it into the spare slot and restarts.
 const char *UPDATE_BASE = "https://github.com/atrociouslyterrific/esp32-epaper-projects/releases/download/latest/";
@@ -431,7 +444,7 @@ void checkForUpdate() {
 
 void updateTick() {
   if (millis() < nextUpdateCheck) return;
-  nextUpdateCheck = millis() + 24UL * 60 * 60 * 1000;  // then once a day
+  nextUpdateCheck = millis() + 6UL * 60 * 60 * 1000;  // then every 6 hours (GitHub trains every 6 hours)
   checkForUpdate();
 }
 
@@ -503,6 +516,8 @@ const Key K_PLAY[] = {{0,128},{-7,80},{-17,90},{-22,100},{-17,94},{-7,84},{0,132
 const Key K_HOP[]  = {{0,124},{-8,84},{-12,96},{-6,90},{0,126},{0,106},{0,100}};
 const Key K_CALL[] = {{0,120},{-6,86},{-9,96},{0,124},{-6,86},{-9,96},{0,120},{0,100}};
 const Key K_SING[] = {{0,106},{-1,94},{0,106},{-1,94},{0,106},{0,100}};
+const Key K_DANCE[] = {{0,120},{-6,86},{0,124},{-3,92},{0,118},{-8,84},{-12,96},{0,128},{0,110},{-6,86},{0,124},{0,100}};
+const Key K_LOOK[]  = {{0,96},{-2,92},{-2,92},{0,98},{0,100}};  // stretches up to see out
 const Key K_EAT[]  = {{0,112},{0,96},{0,112},{0,96},{0,100}};
 const Key K_SHIVER[] = {{0,104},{0,98},{0,104},{0,98},{0,100}};
 const Key *keys = nullptr;
@@ -674,6 +689,19 @@ void drawPip(int a, bool sad) {
       display.setCursor(bx + 3, top - 2); display.print("!");
       break;
     }
+    case A_DANCE:
+      drawArc(el, ey + 1, 3, -3, 1); drawArc(er, ey + 1, 3, -3, 1);   // ^ ^
+      display.fillCircle(cx + look, my, 3, GxEPD_BLACK);              // singing along
+      drawNote(cx - rx - 10, cy - 6 + (pipJump < 0 ? -4 : 0));
+      drawNote(cx + rx + 4, cy - 10 + (pipJump < 0 ? 0 : -4));
+      break;
+    case A_WINDOW:  // gazing up at the window
+      display.fillCircle(cx - gap, ey - 2, 3, GxEPD_BLACK); display.fillCircle(cx + gap, ey - 2, 3, GxEPD_BLACK);
+      display.drawPixel(cx - gap, ey - 4, GxEPD_WHITE); display.drawPixel(cx + gap, ey - 4, GxEPD_WHITE);
+      display.drawCircle(cx, my + 1, 2, GxEPD_BLACK);                 // "ooh"
+      display.drawPixel(cx - 8, top - 6, GxEPD_BLACK); display.drawPixel(cx + 9, top - 9, GxEPD_BLACK);  // sparkles
+      display.drawPixel(cx - 7, top - 7, GxEPD_BLACK); display.drawPixel(cx + 10, top - 8, GxEPD_BLACK);
+      break;
     default:  // idle and hide
       display.fillCircle(el, ey, 3, GxEPD_BLACK); display.fillCircle(er, ey, 3, GxEPD_BLACK);
       display.drawPixel(el + 1, ey - 1, GxEPD_WHITE); display.drawPixel(er + 1, ey - 1, GxEPD_WHITE);
@@ -784,6 +812,8 @@ int targetFor(int a) {
     case A_SING: case A_CALL: return 100;
     case A_PLAY: return randomX(60, 130);
     case A_EXPLORE: return randomX(20, 170);
+    case A_DANCE: return randomX(60, 140);
+    case A_WINDOW: return 101;  // right under the window
     default: return pipX;
   }
 }
@@ -798,6 +828,8 @@ void beginPerform() {
   else if (action == A_SING) setKeys(K_SING, sizeof(K_SING) / sizeof(Key));
   else if (action == A_EAT) { facing = (snackX >= 0) ? (snackX > pipX ? 1 : -1) : 1; setKeys(K_EAT, sizeof(K_EAT) / sizeof(Key)); }
   else if (action == A_WARM_UP) setKeys(K_SHIVER, sizeof(K_SHIVER) / sizeof(Key));
+  else if (action == A_DANCE) setKeys(K_DANCE, sizeof(K_DANCE) / sizeof(Key));
+  else if (action == A_WINDOW) setKeys(K_LOOK, sizeof(K_LOOK) / sizeof(Key));
 }
 
 // Called by think(): walk to where this action happens, then do it.
@@ -855,6 +887,7 @@ bool animFrame() {
       squash = keys[performStep].sq;
       performStep++;
       if (action == A_PLAY && pipJump <= -20) facing = -facing;  // turns in the air
+      if (action == A_DANCE) facing = (performStep % 2) ? 1 : -1;  // dances side to side
       return true;
     }
     bool settle = squash != 100 || pipJump != 0 || performStep == 0;
@@ -971,6 +1004,8 @@ void speakSomething() {
   bool night = clockSet && (senses.hour >= 22 || senses.hour < 6);
   bool morning = clockSet && senses.hour >= 6 && senses.hour < 10;
   if (action == A_NAP) { speak('S', 20000); return; }
+  if (action == A_DANCE && esp_random() % 3 != 0) { speak('D', 15000); return; }
+  if (action == A_WINDOW && esp_random() % 3 != 0) { speak('V', 15000); return; }
   // Things Pip is feeling right now come first...
   if (pip.food < 0.3f) moods[n++] = 'H';
   if (pip.energy < 0.3f) moods[n++] = 'T';

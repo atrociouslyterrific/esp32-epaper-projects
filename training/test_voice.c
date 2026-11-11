@@ -18,7 +18,7 @@ int main(int argc, char **argv) {
     char *want = line + 2;
     want[strcspn(want, "\r\n")] = 0;
     char got[64];
-    pv_generate(mood, got, 24, 0, no_rand);
+    pv_generate(mood, got, 30, 0, no_rand);  // same limit as Python's generate()
     total++;
     if (strcmp(got, want) == 0) same++;
     printf("%c  python: %-24s  c: %s\n", mood, want, got);

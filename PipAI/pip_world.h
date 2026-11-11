@@ -4,10 +4,10 @@
 #pragma once
 #include <math.h>
 
-enum PipAction { A_IDLE, A_NAP, A_EAT, A_EXPLORE, A_PLAY, A_SING, A_HIDE, A_WARM_UP, A_COOL_DOWN, A_CALL, PIP_N_ACTIONS };
+enum PipAction { A_IDLE, A_NAP, A_EAT, A_EXPLORE, A_PLAY, A_SING, A_HIDE, A_WARM_UP, A_COOL_DOWN, A_CALL, A_DANCE, A_WINDOW, PIP_N_ACTIONS };
 
 static const char *PIP_ACTION_NAMES[PIP_N_ACTIONS] = {
-  "idle", "nap", "eat", "explore", "play", "sing", "hide", "warm_up", "cool_down", "call"};
+  "idle", "nap", "eat", "explore", "play", "sing", "hide", "warm_up", "cool_down", "call", "dance", "window"};
 
 typedef struct {
   float curious, playful, lazy, brave, affectionate;  // 0..1
@@ -30,7 +30,7 @@ typedef struct {
   int prevOrient;
 } PipState;
 
-#define PIP_N_FEATURES 34
+#define PIP_N_FEATURES 36
 
 static inline float pip_clamp01(float v) { return v < 0 ? 0 : (v > 1 ? 1 : v); }
 static inline float pip_clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
@@ -136,6 +136,21 @@ static void pip_act(PipState *s, const PipSenses *se, const PipTraits *t, int a)
   if (a == A_COOL_DOWN) { s->comfort += 0.06f * hot; s->energy -= 0.004f; }
   if (a == A_CALL) s->social += ownerNear > 0 ? 0.05f : 0.005f;
 
+  // Dance: big fun for playful Pips, even better with someone watching
+  if (a == A_DANCE) {
+    s->fun += 0.035f + 0.02f * t->playful;
+    s->social += 0.04f * ownerNear;
+    s->energy -= 0.012f;
+    s->food -= 0.003f;
+  }
+  // Look out the window: calm entertainment; sunshine is cosy in the day, the moon at night
+  if (a == A_WINDOW) {
+    float day = 1.0f - night;
+    s->fun += 0.012f + 0.02f * t->curious * day + 0.008f * night;
+    s->comfort += 0.02f * day;
+    s->energy += 0.001f;
+  }
+
   pip_clamp_needs(s);
   s->repeat = (a == s->prevAction) ? s->repeat + 1 : 0;
   s->prevAction = a;
@@ -163,7 +178,9 @@ static float pip_reward(const PipState *s, const PipTraits *t, int a, float nigh
   if (a == A_EXPLORE || a == A_PLAY) r -= like * 0.5f * (t->lazy - 0.5f);
   if (a == A_SING || a == A_CALL) r += like * (t->affectionate - 0.5f);
   if (a == A_HIDE) r += like * (0.5f - t->brave);
-  if (a == A_EXPLORE || a == A_PLAY || a == A_SING || a == A_CALL) r += 0.04f;
+  if (a == A_DANCE) r += like * 0.5f * (t->playful - 0.5f);
+  if (a == A_WINDOW) r += like * 0.5f * (t->curious - 0.5f);
+  if (a == A_EXPLORE || a == A_PLAY || a == A_SING || a == A_CALL || a == A_DANCE || a == A_WINDOW) r += 0.04f;
   float day = 1.0f - night;
   if (a == A_NAP && s->energy > 0.6f) r -= 0.04f * day;
   if (a == A_EAT && s->food > 0.7f) r -= 0.03f;

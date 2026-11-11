@@ -11,15 +11,15 @@ import numpy as np
 
 STEP_HOURS = 0.05  # one "thought" every 3 minutes
 
-ACTIONS = ["idle", "nap", "eat", "explore", "play", "sing", "hide", "warm_up", "cool_down", "call"]
-IDLE, NAP, EAT, EXPLORE, PLAY, SING, HIDE, WARM_UP, COOL_DOWN, CALL = range(10)
+ACTIONS = ["idle", "nap", "eat", "explore", "play", "sing", "hide", "warm_up", "cool_down", "call", "dance", "window"]
+IDLE, NAP, EAT, EXPLORE, PLAY, SING, HIDE, WARM_UP, COOL_DOWN, CALL, DANCE, WINDOW = range(12)
 N_ACTIONS = len(ACTIONS)
 
 TRAITS = ["curious", "playful", "lazy", "brave", "affectionate"]
 NEEDS = ["food", "energy", "fun", "comfort", "social"]
 
 # Orientation: 0 = no sensor, 1 = upright, 2 = tilted, 3 = upside down
-N_FEATURES = 34
+N_FEATURES = 36  # 12 actions -> the 'last action' part grew by 2
 
 
 class PipState:
@@ -155,6 +155,20 @@ def act(st, se, tr, a):
     cl = (a == CALL).astype(float)
     st.social += cl * np.where(owner_near > 0, 0.05, 0.005)
 
+    # Dance: big fun for playful Pips, even better with someone watching
+    dn = (a == DANCE).astype(float)
+    st.fun += dn * (0.035 + 0.02 * playful)
+    st.social += dn * 0.04 * owner_near
+    st.energy -= dn * 0.012
+    st.food -= dn * 0.003
+
+    # Look out the window: calm entertainment; sunshine is cosy in the day, the moon at night
+    wn = (a == WINDOW).astype(float)
+    day = 1.0 - night
+    st.fun += wn * (0.012 + 0.02 * curious * day + 0.008 * night)
+    st.comfort += wn * 0.02 * day
+    st.energy += wn * 0.001
+
     st.clamp()
     st.repeat = np.where(a == st.prev_action, st.repeat + 1, 0)
     st.prev_action = a.copy()
@@ -182,8 +196,10 @@ def reward(st, tr, a):
     r -= like * 0.5 * (lazy - 0.5) * ((a == EXPLORE) | (a == PLAY))
     r += like * (affectionate - 0.5) * ((a == SING) | (a == CALL))
     r += like * (0.5 - brave) * (a == HIDE)
+    r += like * 0.5 * (playful - 0.5) * (a == DANCE)
+    r += like * 0.5 * (curious - 0.5) * (a == WINDOW)
     # Being active is rewarding in itself, whatever the personality
-    active = (a == EXPLORE) | (a == PLAY) | (a == SING) | (a == CALL)
+    active = (a == EXPLORE) | (a == PLAY) | (a == SING) | (a == CALL) | (a == DANCE) | (a == WINDOW)
     r += 0.04 * active
     # Sleeping the day away when not tired, or eating when not hungry, feels lazy
     day = (st.prev_hour_day if hasattr(st, "prev_hour_day") else 1.0)

@@ -269,7 +269,7 @@ h3 { font: 600 14px var(--f-body); margin: 16px 0 8px; }
   <section aria-labelledby="net-h">
     <h2 id="net-h">Inside Pip's brain</h2>
     <div class="scroll"><svg class="chart net" id="net" viewBox="0 0 820 420" role="img" aria-label="Neural network diagram: 34 inputs, two hidden layers of 48, 10 actions"></svg></div>
-    <p class="note">Every sense and feeling on the left connects to every neuron in the next layer, 4,522 learned numbers in total. Each line is one real weight: <span class="pos">teal</span> pushes the next neuron up, <span class="neg">orange</span> pushes it down, and stronger weights draw darker. On the right, each action's circle grows with how often the brain currently picks it.</p>
+    <p class="note">Every sense and feeling on the left connects to every neuron in the next layer; training adjusts every one of those connections. Each line is one real weight: <span class="pos">teal</span> pushes the next neuron up, <span class="neg">orange</span> pushes it down, and stronger weights draw darker. On the right, each action's circle grows with how often the brain currently picks it.</p>
   </section>
 
   <section aria-labelledby="w-h">
@@ -282,7 +282,7 @@ h3 { font: 600 14px var(--f-body); margin: 16px 0 8px; }
       <div class="wcard"><h3>Layer 1 · senses → 48 neurons</h3><div class="scroll"><canvas id="w-1" class="heat"></canvas></div></div>
       <div class="wcard"><h3>Layer 2 · 48 → 48 neurons</h3><div class="scroll"><canvas id="w-2" class="heat"></canvas></div></div>
       <div class="wcard"><h3>Layer 3 · 48 neurons → actions</h3><div class="scroll"><canvas id="w-3" class="heat"></canvas></div></div>
-      <div class="wcard"><h3>All 4,522 numbers</h3><svg id="w-hist" class="chart" viewBox="0 0 360 200" role="img" aria-label="Histogram of all weights"></svg></div>
+      <div class="wcard"><h3>All the brain's numbers</h3><svg id="w-hist" class="chart" viewBox="0 0 360 200" role="img" aria-label="Histogram of all weights"></svg></div>
     </div>
     <div class="tip" id="wtip" hidden></div>
   </section>
@@ -330,7 +330,7 @@ const host = location.hostname.endsWith(".github.io") ? location.hostname.split(
 const repoName = location.hostname.endsWith(".github.io") && location.pathname.split("/")[1] ? location.pathname.split("/")[1] : "esp32-epaper-projects";
 const REPO = `${host}/${repoName}`;
 const API = `https://api.github.com/repos/${REPO}`;
-const ACTIONS = ["idle","nap","eat","explore","play","sing","hide","warm_up","cool_down","call"];
+const ACTIONS = ["idle","nap","eat","explore","play","sing","hide","warm_up","cool_down","call","dance","window"];
 const $ = id => document.getElementById(id);
 let status = null, runs = [], release = null, nextTimer = null;
 
@@ -568,6 +568,7 @@ const EXAMPLES = {
   play: ["Bouncing around for fun", [.7, .6, .4, .8, .7]], sing: ["La la la~", [.7, .7, .6, .8, .4]],
   hide: ["Feeling shy...", [.7, .7, .6, .45, .6]], warm_up: ["Brr, it's cold in here", [.7, .6, .6, .3, .6]],
   cool_down: ["Phew, it's hot!", [.7, .5, .6, .35, .6]], call: ["Hello? Anyone there?", [.7, .7, .6, .8, .2]],
+  dance: ["Dance break!", [.7, .6, .45, .8, .7]], window: ["Watching the sky", [.7, .7, .5, .8, .6]],
 };
 // Same squash-and-stretch keyframes as the board: [height above floor, squash %]
 const KEYS = {
@@ -577,10 +578,12 @@ const KEYS = {
   sing: [[0,106],[-1,94],[0,106],[-1,94],[0,106],[0,100]],
   eat: [[0,112],[0,96],[0,112],[0,96],[0,100]],
   warm_up: [[0,104],[0,98],[0,104],[0,98],[0,100]],
+  dance: [[0,120],[-6,86],[0,124],[-3,92],[0,118],[-8,84],[-12,96],[0,128],[0,110],[-6,86],[0,124],[0,100]],
+  window: [[0,96],[-2,92],[-2,92],[0,98],[0,100]],
 };
 const randX = (lo, hi) => lo + Math.floor(Math.random() * (hi - lo + 1));
 const targetFor = (a, x) => ({ nap: BED_X, warm_up: BED_X, eat: BOWL_X - 26, hide: BOX_X, cool_down: 70, sing: 100, call: 100,
-  play: randX(60, 130), explore: randX(20, 170) })[a] ?? x;
+  play: randX(60, 130), explore: randX(20, 170), dance: randX(60, 140), window: 101 })[a] ?? x;
 
 function epaper(ctx, st) {
   const c = ctx, a = st.action, walk = st.mode === "walk";
@@ -649,6 +652,12 @@ function epaper(ctx, st) {
         for (let x = cx - rx + 1; x < cx + rx; x += 6) line(x, cy + 5, x + 3, cy + 8); } break;
     case "cool_down": fillC(el, ey, 3); fillC(er, ey, 3); arc(Math.round(cx + look), Math.round(my), 5, -1, 1);
       c.beginPath(); c.moveTo(cx + rx - 4, top + 3); c.lineTo(cx + rx - 7, top + 9); c.lineTo(cx + rx - 1, top + 9); c.fill(); fillC(cx + rx - 4, top + 10, 3); break;
+    case "dance": arc(el, ey + 1, 3, -3, 1); arc(er, ey + 1, 3, -3, 1); fillC(cx + look, my, 3);
+      note(Math.round(cx - rx - 10), Math.round(cy - 6 + (st.jump < 0 ? -4 : 0)));
+      note(Math.round(cx + rx + 4), Math.round(cy - 10 + (st.jump < 0 ? 0 : -4))); break;
+    case "window": fillC(cx - gap, ey - 2, 3); fillC(cx + gap, ey - 2, 3); px(Math.round(cx - gap), Math.round(ey - 4), PAPER); px(Math.round(cx + gap), Math.round(ey - 4), PAPER);
+      ring(cx, my + 1, 2); px(Math.round(cx - 8), Math.round(top - 6), INK); px(Math.round(cx + 9), Math.round(top - 9), INK);
+      px(Math.round(cx - 7), Math.round(top - 7), INK); px(Math.round(cx + 10), Math.round(top - 8), INK); break;
     case "call": { fillC(el, ey, 3); fillC(er, ey, 3); fillC(cx + look, my, 3);
       const bx = cx + side * (rx + 3) - (side < 0 ? 10 : 0); rrect(bx, top - 6, 10, 14, 3); text("!", bx + 3, top - 3, 8, PAPER); break; }
     default: fillC(el, ey, 3); fillC(er, ey, 3); px(Math.round(el + 1), Math.round(ey - 1), PAPER); px(Math.round(er + 1), Math.round(ey - 1), PAPER);
@@ -685,7 +694,7 @@ function epaper(ctx, st) {
 // between keyframes (the board can only redraw about 3 times a second).
 const pv = { x: 100, jump: 0, sq: 100, facing: 1, leg: 0, mode: "rest", target: 100, action: "idle", keys: null, kt: 0, hops: 0, restUntil: 0, phase: 0 };
 let pinned = null, lastT = 0, nextSayAt = 4000, sayUntil = 0;
-const ACTION_MOOD = { nap: "S", eat: "H", warm_up: "K", cool_down: "W", call: "L", play: "Y", explore: "C", sing: "J", hide: "X", idle: "J" };
+const ACTION_MOOD = { nap: "S", eat: "H", warm_up: "K", cool_down: "W", call: "L", play: "Y", explore: "C", sing: "J", hide: "X", idle: "J", dance: "D", window: "V" };
 function sayLike(mood, ms) {
   const list = status?.voice?.samples?.[mood];
   if (!list?.length) return;
@@ -753,6 +762,7 @@ function step(dt, now) {
     const [ya, sa] = k[i], [yb, sb] = k[i + 1];
     pv.jump = ya + (yb - ya) * t; pv.sq = sa + (sb - sa) * t;
     if (pv.action === "play" && yb <= -20 && ya > -20 && t > .5) pv.facing = (Math.floor(pv.kt) % 2) ? 1 : -1;
+    if (pv.action === "dance") pv.facing = (Math.floor(pv.kt) % 2) ? 1 : -1;
   } else {
     // resting: gentle breathing, and a new action when the moment comes
     const still = ["nap", "hide", "warm_up"].includes(pv.action);
@@ -785,10 +795,11 @@ function buildGallery() {
 
 // ------------------------------------------------------------ network diagram
 const GROUPS = [["needs", 5], ["temp & humidity", 2], ["time of day", 2], ["sound", 1], ["battery", 2], ["your touch", 1],
-  ["tilt", 4], ["something changed", 1], ["personality", 5], ["last action", 10], ["repeating", 1]];
+  ["tilt", 4], ["something changed", 1], ["personality", 5], ["last action", ACTIONS.length], ["repeating", 1]];
 function renderNet() {
   const svg = $("net"), Wd = 820, Ht = 420, T = 14, B = 14;
-  const cols = [{ n: 34, x: 260 }, { n: 48, x: 430 }, { n: 48, x: 580 }, { n: 10, x: 700 }];
+  const nIn = brain ? brain.W1[0].length : INPUT_NAMES.length, nHid = brain ? brain.W1.length : 96;
+  const cols = [{ n: nIn, x: 260 }, { n: nHid, x: 430 }, { n: nHid, x: 580 }, { n: ACTIONS.length, x: 700 }];
   const ys = col => Array.from({ length: col.n }, (_, i) => T + (i + .5) * (Ht - T - B) / col.n);
   const pts = cols.map(ys);
   let out = "";
@@ -825,7 +836,7 @@ function renderNet() {
     out += `<text x="${cols[3].x + 22}" y="${y + 4}" class="lbl">${ACTIONS[i].replace("_", " ")}</text>`;
     out += `<text x="${Wd - 8}" y="${y + 4}" text-anchor="end">${status?.action_mix ? (m[i] * 100).toFixed(0) + "%" : ""}</text>`;
   });
-  [["34 senses &amp; feelings", 0], ["48 neurons", 1], ["48 neurons", 2], ["10 actions", 3]].forEach(([t, k]) =>
+  [[`${nIn} senses &amp; feelings`, 0], [`${nHid} neurons`, 1], [`${nHid} neurons`, 2], [`${ACTIONS.length} actions`, 3]].forEach(([t, k]) =>
     out += `<text x="${cols[k].x}" y="${Ht - 1}" text-anchor="middle">${t}</text>`);
   svg.innerHTML = out;
 }
@@ -842,7 +853,10 @@ function parseHeader(text) {
   const f = { W1: get("W1"), B1: get("B1"), W2: get("W2"), B2: get("B2"), W3: get("W3"), B3: get("B3") };
   if (Object.values(f).some(v => !v)) return null;
   const rows = (flat, n, m) => Array.from({ length: n }, (_, i) => flat.slice(i * m, (i + 1) * m));
-  return { W1: rows(f.W1, 48, 34), b1: f.B1, W2: rows(f.W2, 48, 48), b2: f.B2, W3: rows(f.W3, 10, 48), b3: f.B3 };
+  const def = n => +(text.match(new RegExp(`#define ${n} (\\d+)`)) || [])[1];
+  const nIn = def("PIP_N_IN"), nHid = def("PIP_N_HID"), nOut = def("PIP_N_OUT");
+  if (!nIn || !nHid || !nOut) return null;
+  return { W1: rows(f.W1, nHid, nIn), b1: f.B1, W2: rows(f.W2, nHid, nHid), b2: f.B2, W3: rows(f.W3, nOut, nHid), b3: f.B3 };
 }
 
 async function loadBrain() {
@@ -907,10 +921,10 @@ function renderWeights() {
   const actionNames = ACTIONS.map(a => a.replace("_", " "));
   const influence = matMul(matMul(brain.W3, brain.W2), brain.W1);  // 10 x 34
   drawHeat($("w-influence"), influence, { cell: 16, rowLabels: actionNames, colLabels: INPUT_NAMES, labelW: 80, labelH: 104 });
-  drawHeat($("w-1"), brain.W1, { cell: 6, rowName: "neuron A", colName: "input" });
+  drawHeat($("w-1"), brain.W1, { cell: 4, rowName: "neuron A", colName: "input" });
   $("w-1")._hit.colLabels = INPUT_NAMES;  // names show on hover
-  drawHeat($("w-2"), brain.W2, { cell: 5, rowName: "neuron B", colName: "neuron A" });
-  drawHeat($("w-3"), brain.W3, { cell: 6, rowLabels: actionNames, labelW: 70, rowName: "action", colName: "neuron B" });
+  drawHeat($("w-2"), brain.W2, { cell: 3, rowName: "neuron B", colName: "neuron A" });
+  drawHeat($("w-3"), brain.W3, { cell: 4, rowLabels: actionNames, labelW: 70, rowName: "action", colName: "neuron B" });
   // Histogram
   const bins = 40, lo = -absMax, hi = absMax, counts = Array(bins).fill(0);
   all.forEach(v => counts[Math.min(bins - 1, Math.floor((v - lo) / (hi - lo) * bins))]++);
@@ -958,7 +972,7 @@ function renderRadars() {
 }
 
 const MOOD_NAMES = { S: "asleep", H: "hungry", T: "tired", L: "lonely", B: "bored", K: "cold", W: "hot", N: "night", M: "morning",
-  P: "petted", C: "curious", Y: "playful", Z: "lazy", R: "brave", X: "shy", A: "affectionate", J: "happy" };
+  P: "petted", C: "curious", Y: "playful", Z: "lazy", R: "brave", X: "shy", A: "affectionate", J: "happy", D: "dancing", V: "window" };
 function renderTalk() {
   const v = status?.voice;
   if (!v?.samples) return;

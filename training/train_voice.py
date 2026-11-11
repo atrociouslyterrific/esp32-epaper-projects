@@ -19,9 +19,9 @@ sys.path.insert(0, os.path.dirname(__file__))
 import speech_corpus as SC  # noqa: E402
 
 SEED = 11
-HIDDEN = 96
-STEPS = int(os.environ.get("PIP_VOICE_STEPS", "3000"))                 # from scratch
-CONTINUE_STEPS = int(os.environ.get("PIP_VOICE_CONTINUE_STEPS", "800"))  # nightly top-up
+HIDDEN = 128  # memory cells (was 96)
+STEPS = int(os.environ.get("PIP_VOICE_STEPS", "5000"))                 # from scratch
+CONTINUE_STEPS = int(os.environ.get("PIP_VOICE_CONTINUE_STEPS", "1200"))  # nightly top-up
 CONTINUE_LR = 1e-3
 BATCH, SEQ, LR = 128, 96, 3e-3
 
@@ -116,7 +116,7 @@ def train(ck=None):
     seed = SEED + (ck["gen"] if ck else 0)
     torch.manual_seed(seed)
     rng = np.random.default_rng(seed)
-    lines = SC.make_lines(40000, seed=seed)
+    lines = SC.make_lines(80000, seed=seed)
     corpus = set(l.split(">", 1)[1] for l in lines)
     stream = np.array([IDX[c] for c in "".join(l + "\n" for l in lines)], dtype=np.int64)
     model = Voice()

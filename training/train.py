@@ -18,11 +18,11 @@ sys.path.insert(0, os.path.dirname(__file__))
 import pip_world as W  # noqa: E402
 
 SEED = 7
-HIDDEN = 48
+HIDDEN = 96  # neurons per hidden layer (was 48)
 ENVS = 128
 ROLLOUT = 256
-UPDATES = int(os.environ.get("PIP_UPDATES", "1000"))            # training from scratch
-CONTINUE_UPDATES = int(os.environ.get("PIP_CONTINUE_UPDATES", "300"))  # nightly top-up from the last version
+UPDATES = int(os.environ.get("PIP_UPDATES", "1500"))            # training from scratch
+CONTINUE_UPDATES = int(os.environ.get("PIP_CONTINUE_UPDATES", "400"))  # nightly top-up from the last version
 CONTINUE_LR = 1.5e-4
 GAMMA, LAM = 0.99, 0.95
 CLIP, ENT_COEF, VF_COEF, LR = 0.2, 0.005, 0.5, 3e-4
@@ -311,9 +311,16 @@ if __name__ == "__main__":
         STATUS["history"] = []
     write_status(state="training")
     ck = load_checkpoint()
-    write_status(mode="continue" if ck else "scratch", from_version=ck["gen"] if ck else 0)
+    prev_gen = 0  # keep counting versions even when the brain's shape changed and it restarts
+    if not ck and os.path.exists(CKPT_IN):
+        try:
+            prev_gen = int(torch.load(CKPT_IN, map_location="cpu").get("gen", 0))
+        except Exception:
+            pass
+    write_status(mode="continue" if ck else ("new shape" if prev_gen else "scratch"),
+                 from_version=ck["gen"] if ck else prev_gen)
     actor, critic, opt = train(ck)
-    gen = (ck["gen"] + 1) if ck else 1
+    gen = (ck["gen"] + 1) if ck else prev_gen + 1
     # Keep the new brain only if it's at least as good as the old one (same test worlds, current rules)
     new_score = evaluate(actor)
     kept = "new"
