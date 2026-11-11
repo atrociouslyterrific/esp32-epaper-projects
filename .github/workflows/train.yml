@@ -33,7 +33,7 @@ jobs:
     # Never react to the bot's own "Update Pip's trained brain" commit (that commit
     # changes training/, so without this guard it could retrain itself forever).
     if: github.actor != 'github-actions[bot]'
-    runs-on: ubuntu-24.04  # pinned: ubuntu-latest (moving to Ubuntu 26) stopped picking up jobs
+    runs-on: ubuntu-24.04-arm  # ARM pool: the x64 ubuntu-latest/24.04 runners stopped picking up jobs (Nov 2026)
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4

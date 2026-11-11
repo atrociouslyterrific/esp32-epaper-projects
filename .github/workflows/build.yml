@@ -31,7 +31,7 @@ env:
 jobs:
   build:
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
-    runs-on: ubuntu-24.04  # pinned: ubuntu-latest (moving to Ubuntu 26) stopped picking up jobs
+    runs-on: ubuntu-24.04-arm  # ARM pool: the x64 ubuntu-latest/24.04 runners stopped picking up jobs (Nov 2026)
     timeout-minutes: 30  # a normal build takes ~5 min; never sit for GitHub's 6-hour default
     strategy:
       fail-fast: false
@@ -98,7 +98,7 @@ jobs:
     needs: build
     timeout-minutes: 10
     if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.event_name == 'workflow_run')
-    runs-on: ubuntu-24.04  # pinned: ubuntu-latest (moving to Ubuntu 26) stopped picking up jobs
+    runs-on: ubuntu-24.04-arm  # ARM pool: the x64 ubuntu-latest/24.04 runners stopped picking up jobs (Nov 2026)
     steps:
       - uses: actions/download-artifact@v4
         with:

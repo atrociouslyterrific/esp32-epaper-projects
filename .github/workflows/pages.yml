@@ -19,7 +19,7 @@ concurrency:
 
 jobs:
   deploy:
-    runs-on: ubuntu-24.04  # pinned: ubuntu-latest (moving to Ubuntu 26) stopped picking up jobs
+    runs-on: ubuntu-24.04-arm  # ARM pool: the x64 ubuntu-latest/24.04 runners stopped picking up jobs (Nov 2026)
     timeout-minutes: 10
     environment:
       name: github-pages
