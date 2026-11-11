@@ -12,7 +12,17 @@
 
 #include <SPI.h>
 #include <Preferences.h>
+#include <WiFi.h>
+#include <WebServer.h>
+#include <ESPmDNS.h>
 #include <GxEPD2_BW.h>
+
+// ---- Wi-Fi (type your own details here in the Arduino IDE) ----
+// Your network must be 2.4 GHz (the ESP32 can't join 5 GHz-only networks).
+// Don't paste your real password back into GitHub.
+const char *WIFI_NAME     = "your-wifi-name";
+const char *WIFI_PASSWORD = "your-wifi-password";
+const char *WEB_NAME      = "pip";  // phone address becomes http://pip.local
 
 // ---- Board pins (from Waveshare's example code) ----
 const int EPD_PWR  = 6;   // screen power (LOW = on)
@@ -280,6 +290,137 @@ void tick() {
   saveState();
 }
 
+// ---------- Phone web page ----------
+WebServer server(80);
+bool needRedraw = false;
+bool wifiWasConnected = false;
+unsigned long lastWifiAttempt = 0;
+
+const char PAGE_HTML[] PROGMEM = R"rawliteral(<!doctype html>
+<html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pet</title>
+<style>
+  body{font-family:-apple-system,system-ui,sans-serif;max-width:420px;margin:0 auto;padding:16px;background:#f4f1ea;color:#222}
+  h1{margin:4px 0;font-size:28px;text-align:center}
+  #msg{text-align:center;min-height:1.4em;margin:8px 0 16px;font-style:italic}
+  .row{display:flex;align-items:center;gap:10px;margin:10px 0}
+  .row span{width:70px;font-weight:600}
+  .bar{flex:1;height:18px;border:2px solid #222;border-radius:6px;overflow:hidden;background:#fff}
+  .fill{height:100%;background:#222;transition:width .4s}
+  .btns{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:20px}
+  button{font-size:20px;padding:16px;border:2px solid #222;border-radius:12px;background:#fff}
+  button:active{background:#222;color:#fff}
+  #face{font-size:56px;text-align:center}
+  #age{text-align:center;color:#666}
+</style></head><body>
+<div id="face">( o_o )</div>
+<h1 id="name">...</h1>
+<div id="age"></div>
+<div id="msg"></div>
+<div class="row"><span>Food</span><div class="bar"><div class="fill" id="food"></div></div></div>
+<div class="row"><span>Fun</span><div class="bar"><div class="fill" id="fun"></div></div></div>
+<div class="row"><span>Energy</span><div class="bar"><div class="fill" id="energy"></div></div></div>
+<div class="btns">
+  <button onclick="act('feed')">Feed</button>
+  <button onclick="act('play')">Play</button>
+  <button onclick="act('sleep')">Sleep</button>
+  <button onclick="act('wake')">Wake</button>
+</div>
+<script>
+const faces={happy:'( ^o^ )',okay:'( o_o )',sad:'( T_T )',sleeping:'( -_- ) zZ'};
+function show(s){
+  document.getElementById('name').textContent=s.name;
+  document.getElementById('age').textContent='age '+s.days+'d '+s.hours+'h';
+  document.getElementById('msg').textContent=s.message;
+  document.getElementById('face').textContent=faces[s.mood]||'';
+  for(const k of ['food','fun','energy'])document.getElementById(k).style.width=s[k]+'%';
+}
+function load(){fetch('/state').then(r=>r.json()).then(show).catch(()=>{});}
+function act(a){fetch('/do?a='+a).then(r=>r.json()).then(show);}
+load();setInterval(load,5000);
+</script></body></html>)rawliteral";
+
+const char *moodName(Mood m) {
+  switch (m) {
+    case HAPPY: return "happy";
+    case OKAY:  return "okay";
+    case SAD:   return "sad";
+    default:    return "sleeping";
+  }
+}
+
+void sendState() {
+  char json[256];
+  snprintf(json, sizeof(json),
+           "{\"name\":\"%s\",\"food\":%d,\"fun\":%d,\"energy\":%d,\"asleep\":%s,"
+           "\"mood\":\"%s\",\"message\":\"%s\",\"days\":%lu,\"hours\":%lu}",
+           PET_NAME, food, fun, energy, asleep ? "true" : "false",
+           moodName(currentMood()), message,
+           ageMinutes / (60 * 24), (ageMinutes / 60) % 24);
+  server.send(200, "application/json", json);
+}
+
+void handleAction() {
+  String a = server.arg("a");
+  if (a == "wake") {
+    if (asleep) {
+      asleep = false;
+      snprintf(message, sizeof(message), "Huh? I'm awake!");
+      saveState();
+    }
+  } else {
+    if (asleep) {  // any action wakes the pet first, same as the buttons
+      asleep = false;
+      snprintf(message, sizeof(message), "Huh? I'm awake!");
+      saveState();
+    } else if (a == "feed")  doAction(FEED);
+    else if (a == "play")    doAction(PLAY);
+    else if (a == "sleep")   doAction(SLEEP);
+  }
+  needRedraw = true;  // the screen updates right after we reply to the phone
+  sendState();
+}
+
+void startWifi() {
+  if (strcmp(WIFI_NAME, "your-wifi-name") == 0) {
+    Serial.println("Wi-Fi not set up: edit WIFI_NAME and WIFI_PASSWORD at the top.");
+    return;
+  }
+  WiFi.mode(WIFI_STA);
+  WiFi.setHostname(WEB_NAME);
+  WiFi.begin(WIFI_NAME, WIFI_PASSWORD);
+  lastWifiAttempt = millis();
+  Serial.printf("Connecting to Wi-Fi \"%s\"...\n", WIFI_NAME);
+
+  server.on("/", []() { server.send_P(200, "text/html", PAGE_HTML); });
+  server.on("/state", sendState);
+  server.on("/do", handleAction);
+  server.begin();
+}
+
+// Notice when Wi-Fi connects or drops, and retry if needed.
+void checkWifi() {
+  if (strcmp(WIFI_NAME, "your-wifi-name") == 0) return;
+  bool connected = WiFi.status() == WL_CONNECTED;
+  if (connected && !wifiWasConnected) {
+    MDNS.begin(WEB_NAME);
+    MDNS.addService("http", "tcp", 80);
+    String ip = WiFi.localIP().toString();
+    Serial.printf("Wi-Fi connected! Open http://%s.local or http://%s\n", WEB_NAME, ip.c_str());
+    snprintf(message, sizeof(message), "WiFi: %s", ip.c_str());
+    needRedraw = true;
+  } else if (!connected && wifiWasConnected) {
+    Serial.println("Wi-Fi lost, reconnecting...");
+    MDNS.end();
+  }
+  if (!connected && millis() - lastWifiAttempt > 30000) {
+    WiFi.reconnect();
+    lastWifiAttempt = millis();
+  }
+  wifiWasConnected = connected;
+}
+
 // Returns true once per press (on the moment it goes down).
 bool pressed(int pin, bool &wasDown) {
   bool down = digitalRead(pin) == LOW;
@@ -311,6 +452,8 @@ void setup() {
 
   drawScreen();
   lastTick = millis();
+
+  startWifi();
 }
 
 bool bootWasDown = true;  // start "down" so a held button at power-on is ignored
@@ -345,6 +488,13 @@ void loop() {
     lastTick += TICK_MS;
     tick();
     frame++;
+    changed = true;
+  }
+
+  server.handleClient();
+  checkWifi();
+  if (needRedraw) {
+    needRedraw = false;
     changed = true;
   }
 
