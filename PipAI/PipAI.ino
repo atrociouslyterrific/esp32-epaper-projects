@@ -1,7 +1,7 @@
 // PipAI - an autonomous digital pet with a real (tiny) neural-network brain.
 // For the Waveshare ESP32-S3-ePaper-1.54 (V2).
 //
-// Every 3 minutes Pip senses its surroundings (temperature, humidity, time of day,
+// Every 90 seconds Pip senses its surroundings (temperature, humidity, time of day,
 // battery, your pats) and its own needs, and its neural network - trained with
 // reinforcement learning on GitHub - decides what to do. Each Pip is born with a
 // random personality (curious, playful, lazy, brave, affectionate) that changes
@@ -42,7 +42,9 @@ const uint8_t SHTC3_ADDR = 0x70, RTC_ADDR = 0x51;
 const char *PET_NAME = "Pip";
 const char *SETUP_WIFI_NAME = "Pip-Setup";
 const char *WEB_NAME = "pip";
-const unsigned long THINK_EVERY_MS = 3UL * 60 * 1000;  // one step = 3 minutes (matches training)
+// Pip decides what to do every 90 seconds. Each decision is one 3-minute step of the
+// world it was trained in, so its needs change about twice as fast as real time.
+const unsigned long THINK_EVERY_MS = 90UL * 1000;
 
 GxEPD2_BW<GxEPD2_154_D67, GxEPD2_154_D67::HEIGHT> display(GxEPD2_154_D67(EPD_CS, EPD_DC, EPD_RST, EPD_BUSY));
 Preferences prefs, wifiPrefs;
@@ -583,7 +585,7 @@ void restNow() {
   squash = 100;
   keys = nullptr;
   bool still = action == A_NAP || action == A_HIDE || action == A_WARM_UP;
-  nextAmbientAt = millis() + (still ? 120000UL : 15000UL + esp_random() % 25000UL);
+  nextAmbientAt = millis() + (still ? 60000UL : 8000UL + esp_random() % 12000UL);  // little moves every 8-20 s
   if (fullRefreshDue) needRedraw = true;  // a good moment to clean the screen
 }
 
@@ -628,7 +630,7 @@ bool animFrame() {
 void ambient() {
   if (millis() < nextAmbientAt) return;
   bool still = action == A_NAP || action == A_HIDE || action == A_WARM_UP;
-  if (still) { nextAmbientAt = millis() + 120000UL; return; }
+  if (still) { nextAmbientAt = millis() + 60000UL; return; }
   uint32_t r = esp_random() % 4;
   if (r == 0) {
     startHop();
@@ -758,7 +760,7 @@ void speechTick() {
   if (speech[0] && millis() > speechUntil) { speech[0] = 0; needRedraw = true; }
   if (millis() < nextSpeechAt || animMode != AN_REST || speech[0]) return;
   speakSomething();
-  nextSpeechAt = millis() + 120000UL + esp_random() % 240000UL;  // every 2-6 minutes
+  nextSpeechAt = millis() + 90000UL + esp_random() % 150000UL;  // every 1.5-4 minutes
 }
 
 // A speech bubble above Pip with a little tail pointing at it.
