@@ -84,8 +84,8 @@ jobs:
       - name: Install ESP32 core and libraries
         if: steps.ready.outputs.go == 'true'
         run: |
-          arduino-cli config init
-          arduino-cli config add board_manager.additional_urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli config init --overwrite   # the cached tools may already include a settings file
+          arduino-cli config set board_manager.additional_urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
           arduino-cli core update-index
           arduino-cli core list | grep -q "^esp32:esp32" || arduino-cli core install esp32:esp32
           arduino-cli lib list | grep -q "^GxEPD2" || arduino-cli lib install GxEPD2

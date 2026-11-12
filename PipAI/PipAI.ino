@@ -477,7 +477,9 @@ void checkForUpdate() {
   if (ret == HTTP_UPDATE_FAILED) {
     updateStatus = "update failed: " + httpUpdate.getLastErrorString();
     Serial.println(updateStatus);
-    snprintf(reason, sizeof(reason), "Update failed, retry tomorrow");
+    // A version that doesn't fit this board's memory layout needs one USB flash (esptool-js)
+    bool tooBig = updateStatus.indexOf("Space") >= 0 || updateStatus.indexOf("space") >= 0 || updateStatus.indexOf("size") >= 0;
+    snprintf(reason, sizeof(reason), "%s", tooBig ? "New version: flash me by USB" : "Update failed, will retry");
     speech[0] = 0;
     needRedraw = true;
   }
@@ -1608,6 +1610,111 @@ void petPip() {
   needRedraw = true;
 }
 
+// ================================================================ Pip trains Bloop
+// While Pip visits, Bloop asks "what do you think of this?" (message PALQ: what Bloop is
+// doing + its situation). Pip answers (PALV) with Good / No / no opinion, how strongly it
+// feels, and what it says. Bloop's brain learns from that like from your GOOD/NO buttons.
+// Pip judges with ITS OWN personality and mood: a playful Pip cheers games, a lazy Pip
+// approves of naps, a shy Pip praises hiding, a grumpy Pip is harder to please.
+
+// Bloop's actions (must match enum Action in bloop_room/brain.h)
+enum : uint8_t { B_WANDER, B_BALL, B_EAT, B_SLEEP, B_GRIP, B_CURL, B_COME, B_SIT, B_DANCE, B_JUMP, B_BEG, B_HIDE, B_WINDOW, B_ROLL };
+// Situation bits Bloop sends
+enum : uint8_t { BS_HUNGRY = 1, BS_TIRED = 2, BS_BALL_NEAR = 4, BS_FOOD_OUT = 8, BS_ATTENTION = 16 };
+enum : uint8_t { BROOM_CALM = 0, BROOM_TILTING = 1, BROOM_FLOATING = 2 };
+
+struct JudgeAsk { uint8_t seq, action, bits, room; };
+volatile JudgeAsk judgeAsk;
+volatile bool judgeAskFresh = false;
+uint8_t lastJudgedSeq = 255;
+unsigned long bloopLessons = 0;
+
+struct __attribute__((packed)) PalVerdict {
+  uint8_t magic[4];   // "PALV"
+  uint8_t who;        // PAL_PIP
+  uint8_t seq;        // the question this answers
+  int8_t verdict;     // +1 good, -1 no, 0 no opinion
+  uint8_t strength;   // 0..100: how strongly Pip feels
+  char text[24];      // what Pip says, ending in a 0 byte
+};
+
+// Returns a score: above +0.25 = "good", below -0.25 = "no", in between = no opinion.
+float pipJudges(uint8_t a, uint8_t bits, uint8_t room, const char **line) {
+  const PipTraits &t = traits;
+  bool hungry = bits & BS_HUNGRY, tired = bits & BS_TIRED, ballNear = bits & BS_BALL_NEAR;
+  bool foodOut = bits & BS_FOOD_OUT, attention = bits & BS_ATTENTION;
+  float sc = 0;
+  *line = nullptr;
+  if (room == BROOM_TILTING) {
+    if (a == B_GRIP) { sc = 0.3f + 0.6f * t.brave; *line = "Hold on tight!"; }
+    else if (a == B_CURL) { sc = 0.4f + 0.4f * (1 - t.brave); *line = "Good, stay safe!"; }
+    else if (a == B_HIDE) { sc = 0.7f * (1 - t.brave) - 0.1f; *line = sc > 0 ? "Hide! Smart!" : "Don't be scared!"; }
+    else if (a == B_DANCE || a == B_JUMP) { sc = t.playful > 0.7f ? 0.35f : -0.7f; *line = sc > 0 ? "Whee, ride it!" : "Not while tipping!"; }
+    else if (a == B_SLEEP || a == B_WINDOW) { sc = -0.6f; *line = "Wake up, it's tipping!"; }
+  } else if (room == BROOM_FLOATING) {
+    if (a == B_DANCE || a == B_JUMP || a == B_ROLL) { sc = 0.6f * t.playful; *line = "Space dance!"; }
+  } else if (hungry) {
+    if (a == B_EAT && foodOut) { sc = 0.8f; *line = "Yes, eat up!"; }
+    else if (a == B_BEG && !foodOut) { sc = 0.6f; *line = "Ask nicely!"; }
+    else if (foodOut) { sc = -0.5f * (1 - t.lazy); *line = "Eat your food!"; }
+  } else if (a == B_EAT || a == B_BEG) {
+    sc = pip.food < 0.3f ? 0 : -0.5f + 0.3f * t.lazy;   // a hungry Pip can't blame it
+    *line = a == B_EAT ? "Greedy Bloop!" : "You just ate!";
+  } else if (tired) {
+    if (a == B_SLEEP) { sc = 0.5f + 0.4f * t.lazy; *line = t.lazy > 0.6f ? "Naps are life!" : "Nice nap!"; }
+    else if (a == B_DANCE || a == B_JUMP) { sc = -0.5f * (1 - t.playful); *line = "Rest first!"; }
+  } else {
+    switch (a) {
+      case B_BALL:   if (ballNear) { sc = 0.4f + 0.5f * t.playful; *line = "Great catch!"; } break;
+      case B_DANCE:  sc = 0.5f * t.playful + 0.3f * t.affectionate - 0.3f * t.lazy; *line = sc > 0 ? "Groovy, Bloop!" : "Too much dancing"; break;
+      case B_JUMP:
+      case B_ROLL:   sc = 0.45f * t.playful - 0.15f * t.lazy; *line = sc > 0 ? "Boing boing!" : "Calm down, Bloop"; break;
+      case B_WANDER: sc = 0.45f * t.curious; *line = "Explore, Bloop!"; break;
+      case B_WINDOW: sc = 0.5f * t.curious; *line = "What do you see?"; break;
+      case B_COME:   if (attention) { sc = 0.2f + 0.5f * t.affectionate; *line = "Say hi to them!"; } break;
+      case B_SIT:    sc = 0.4f * t.lazy - 0.15f * t.playful; *line = sc > 0 ? "Nice and calm" : "Do something!"; break;
+      case B_HIDE:   sc = 0.4f * (1 - t.brave) - 0.2f * t.brave; *line = sc > 0 ? "Cosy hiding spot" : "Come out, Bloop!"; break;
+      case B_SLEEP:  sc = 0.4f * t.lazy - 0.2f; *line = sc > 0 ? "Nap buddies!" : "Not sleepy yet!"; break;
+      default: break;
+    }
+  }
+  // Pip's own mood colours its opinion
+  if (pip.grumpy > 0.35f) sc -= 0.3f;                                   // grumpy Pips are hard to please
+  if (min(min(pip.food, pip.energy), min(pip.fun, pip.social)) > 0.6f) sc += 0.1f;  // happy Pips are generous
+  return sc;
+}
+
+void judgeTick() {
+  if (!judgeAskFresh) return;
+  JudgeAsk q = {judgeAsk.seq, judgeAsk.action, judgeAsk.bits, judgeAsk.room};
+  judgeAskFresh = false;
+  if (!palReady || q.seq == lastJudgedSeq) return;   // Bloop repeats each question; answer once
+  lastJudgedSeq = q.seq;
+
+  const char *line = nullptr;
+  float sc = (asleep || pip.sulky > 0.4f) ? 0 : pipJudges(q.action, q.bits, q.room, &line);  // asleep or sulking: no opinion
+  int8_t verdict = sc > 0.25f ? 1 : (sc < -0.25f ? -1 : 0);
+  PalVerdict v = {};
+  memcpy(v.magic, "PALV", 4);
+  v.who = PAL_PIP;
+  v.seq = q.seq;
+  v.verdict = verdict;
+  v.strength = (uint8_t)min(100.0f, fabsf(sc) * 100.0f);
+  const char *say = verdict > 0 ? (line ? line : "Good Bloop!") : verdict < 0 ? (line && sc < 0 ? line : "No, Bloop!") : "";
+  snprintf(v.text, sizeof(v.text), "%s", say);
+  for (int i = 0; i < 3; i++) esp_now_send(PAL_EVERYONE, (const uint8_t *)&v, sizeof(v));  // radio can drop one
+
+  if (verdict != 0) {
+    bloopLessons++;
+    snprintf(speech, sizeof(speech), "%s", say);
+    speechUntil = millis() + 4000;
+    snprintf(reason, sizeof(reason), "Teaching Bloop (%lu lessons)", bloopLessons);
+    needRedraw = true;
+    Serial.printf("Judged Bloop's action %d (room %d, bits 0x%02x): %s %.2f \"%s\"\n", q.action, q.room, q.bits,
+                  verdict > 0 ? "GOOD" : "NO", sc, say);
+  }
+}
+
 // ================================================================ radio: Pip and Bloop
 // (See "Bloop comes to visit" above.)
 
@@ -1623,6 +1730,13 @@ void palOnRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
     bloopSayBuf[n] = 0;
     bloopSaySeq = data[5];
     bloopSayFresh = true;
+    return;
+  }
+  if (len >= 9 && memcmp(data, "PALQ", 4) == 0 && data[4] == PAL_BLOOP) {
+    // Bloop asks what Pip thinks of what it's doing (see "Pip trains Bloop")
+    if (judgeAskFresh) return;
+    judgeAsk.seq = data[5]; judgeAsk.action = data[6]; judgeAsk.bits = data[7]; judgeAsk.room = data[8];
+    judgeAskFresh = true;
     return;
   }
   if (len < (int)sizeof(PalMsg) || memcmp(data, "PAL1", 4) != 0 || data[4] != PAL_BLOOP) return;
@@ -1781,6 +1895,7 @@ void loop() {
   animTick();
   speechTick();
   visitTick();
+  judgeTick();
   updateTick();
   if (needRedraw) {
     needRedraw = false;
