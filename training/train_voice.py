@@ -315,7 +315,7 @@ static int pv_reply(char src, char mood, const char *heard, char *out, int maxLe
   prompt[n++] = mood;
   for (const char *c = heard; *c && n < 2 + 28; c++) {
     char ch = (*c >= 'A' && *c <= 'Z') ? *c + 32 : *c;   // the voice only knows lowercase
-    if (ch == '|' || ch == '\n') continue;
+    if (ch == '|' || ch == '\\n') continue;
     for (int v = 0; v < PV_V; v++)
       if (PV_VOCAB[v] == ch && v >= PV_FIRST_LETTER) { prompt[n++] = ch; break; }   // only alphabet characters
   }
