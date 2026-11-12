@@ -862,8 +862,9 @@ void finishSnack() {
 // ================================================================ Bloop comes to visit
 // Bloop is the pet on the other board (bloop_room in the esp32-s3-touch-lcd-3.5c
 // repo). Pip calls out over the radio a few times a second. When Bloop's board
-// hears Pip loud and clear, the boards are side by side: Pip hops into Bloop's
-// room on Bloop's screen, Bloop answers, and Bloop shows up in Pip's room here.
+// hears Pip loud and clear, the boards are side by side and the pets visit each
+// other. They share ONE room at a time and take turns: when Pip is in Bloop's room
+// it is gone from this screen; when Bloop comes over, both are drawn here.
 
 // The radio message. Must match the copy in bloop_room/visitor.h.
 struct __attribute__((packed)) PalMsg {
@@ -871,7 +872,7 @@ struct __attribute__((packed)) PalMsg {
   uint8_t who;        // PAL_PIP or PAL_BLOOP
   uint8_t action;     // what the sender is doing (its own action number)
   uint8_t flags;      // PALF_* bits about the sender
-  uint8_t hosting;    // Bloop: 1 while Pip is in Bloop's room
+  uint8_t hosting;    // Bloop: 0 = apart, 1 = both pets are in Bloop's room, 2 = both are in Pip's room
 };
 enum : uint8_t { PAL_PIP = 1, PAL_BLOOP = 2 };
 enum : uint8_t { PALF_SAD = 1, PALF_ASLEEP = 2 };
@@ -895,7 +896,8 @@ uint8_t pipReplyTo = 0, bloopSeqSeen = 0, pipSaySeq = 0;
 
 bool bloopHere = false;                 // the boards are together right now
 volatile uint32_t bloopHeardMs = 0;     // written by the radio, read by loop()
-volatile bool bloopHosting = false;
+volatile uint8_t bloopPlace = 0;        // 0 = apart, 1 = both pets are in Bloop's room, 2 = both are in Pip's room
+uint8_t placeShown = 0;                 // which of those the screen is showing
 volatile uint8_t bloopFlags = 0;
 volatile uint8_t palAction = 0, palFlags = 0;   // what Pip tells Bloop about itself
 uint8_t bloopFlagsDrawn = 0;
@@ -976,6 +978,8 @@ void drawScreen() {
   else snprintf(label, sizeof(label), "%s", PIP_ACTION_NAMES[action]);
   for (char *p = label; *p; p++) *p = (*p == '_') ? ' ' : toupper(*p);
   snprintf(line1, sizeof(line1), "%.32s", reason);
+  bool pipAway = bloopHere && placeShown == 1;   // see "Bloop comes to visit"
+  if (pipAway) snprintf(label, sizeof(label), "VISITING");
 
   display.firstPage();
   do {
@@ -985,9 +989,14 @@ void drawScreen() {
     display.drawLine(0, 12, 199, 12, GxEPD_BLACK);
     drawRoom();
     drawSnack();
-    if (bloopHere) drawBloopGuest();
-    drawPip(action, sad);
-    drawSpeech();
+    if (pipAway) {   // Pip has left its room and is in Bloop's: nobody home
+      printCentered("Pip is over at", 52, 1);
+      printCentered("Bloop's room...", 64, 1);
+    } else {
+      if (bloopHere) drawBloopGuest();
+      drawPip(action, sad);
+      drawSpeech();
+    }
     printCentered(label, 111, 2);
     printCentered(line1, 129, 1);
     drawBar(141, "FOOD", pip.food);
@@ -1618,7 +1627,7 @@ void palOnRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
   }
   if (len < (int)sizeof(PalMsg) || memcmp(data, "PAL1", 4) != 0 || data[4] != PAL_BLOOP) return;
   bloopFlags = data[6];
-  bloopHosting = data[7] != 0;
+  bloopPlace = data[7];
   bloopHeardMs = millis();
 }
 
@@ -1689,7 +1698,18 @@ void visitTick() {
   palFlags = (sad ? PALF_SAD : 0) | (action == A_NAP ? PALF_ASLEEP : 0);
 
   uint32_t heard = bloopHeardMs;   // read this before the clock: the radio can update it at any moment
-  bool together = bloopHosting && heard != 0 && millis() - heard < 5000;
+  uint8_t place = bloopPlace;
+  bool together = place != 0 && heard != 0 && millis() - heard < 5000;
+  // The two pets share one room at a time and take turns (Bloop's board decides):
+  // in Bloop's room, Pip is away from this screen; in Pip's room, Bloop is drawn here.
+  uint8_t show = together ? place : 0;
+  if (show != placeShown) {
+    placeShown = show;
+    if (together == bloopHere) {   // they just moved from one room to the other
+      snprintf(reason, sizeof(reason), show == 2 ? "Bloop came over!" : "Off to Bloop's room!");
+    }
+    needRedraw = true;
+  }
   if (together == bloopHere) {
     if (bloopHere && bloopFlags != bloopFlagsDrawn) { bloopFlagsDrawn = bloopFlags; needRedraw = true; }
     return;
@@ -1702,7 +1722,7 @@ void visitTick() {
   if (bloopHere) {
     pip.social = pip_clamp01(pip.social + 0.2f);   // a friend came over!
     pip.fun = pip_clamp01(pip.fun + 0.15f);
-    snprintf(reason, sizeof(reason), "Bloop came over!");
+    snprintf(reason, sizeof(reason), place == 2 ? "Bloop came over!" : "Off to Bloop's room!");
     if (action != A_NAP) {
       snprintf(speech, sizeof(speech), "Hi Bloop!");
       speechUntil = millis() + 8000;
