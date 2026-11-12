@@ -118,13 +118,42 @@ def load_checkpoint():
     try:
         ck = torch.load(CKPT_IN, map_location="cpu")
         if ck.get("vocab") != VOCAB or ck.get("hidden") != HIDDEN:
-            print("voice checkpoint has a different alphabet or size, starting fresh", flush=True)
-            return None
+            return grow_checkpoint(ck)
         Voice().load_state_dict(ck["model"])
         return ck
     except Exception as e:
         print("voice checkpoint not usable, starting fresh:", e, flush=True)
         return None
+
+
+def grow_checkpoint(ck):
+    """Put a saved voice with a smaller size or older alphabet inside the new one, keeping what it
+    learned: old neurons keep their weights, letters are matched up by character, new neurons and
+    new letters start with no influence (weight 0) and are learned from there."""
+    old_vocab, H0 = ck["vocab"], ck["hidden"]
+    if H0 > HIDDEN:
+        raise ValueError("saved voice is bigger than the new one")
+    old, m = ck["model"], Voice()
+    new = {k: v.clone() for k, v in m.state_dict().items()}
+    tok = [(IDX[c], j) for j, c in enumerate(old_vocab) if c in IDX]  # (new index, old index)
+    for g in range(3):  # GRU gates r, z, n are stacked
+        rows_new, rows_old = slice(g * HIDDEN, g * HIDDEN + H0), slice(g * H0, (g + 1) * H0)
+        new["gru.weight_ih_l0"][rows_new] = 0
+        for ni, oi in tok:
+            new["gru.weight_ih_l0"][rows_new, ni] = old["gru.weight_ih_l0"][rows_old, oi]
+        new["gru.weight_hh_l0"][rows_new] = 0
+        new["gru.weight_hh_l0"][rows_new, :H0] = old["gru.weight_hh_l0"][rows_old]
+        new["gru.bias_ih_l0"][rows_new] = old["gru.bias_ih_l0"][rows_old]
+        new["gru.bias_hh_l0"][rows_new] = old["gru.bias_hh_l0"][rows_old]
+    new["out.weight"].zero_()
+    new["out.bias"].fill_(float(old["out.bias"].min()) - 2)  # new letters: unlikely until learned
+    for ni, oi in tok:
+        new["out.weight"][ni, :H0] = old["out.weight"][oi]
+        new["out.bias"][ni] = old["out.bias"][oi]
+    m.load_state_dict(new)
+    print(f"growing the saved voice v{ck['gen']} ({H0} neurons, {len(old_vocab)} symbols) into "
+          f"{HIDDEN} neurons, {V} symbols - it keeps everything it learned", flush=True)
+    return {"model": m.state_dict(), "gen": ck["gen"], "grown": True}
 
 
 def test_loss(model):
@@ -148,7 +177,7 @@ def train(ck=None):
     lr = LR
     if ck:
         model.load_state_dict(ck["model"])
-        steps, lr = CONTINUE_STEPS, CONTINUE_LR
+        steps, lr = (STEPS if ck.get("grown") else CONTINUE_STEPS), CONTINUE_LR  # grown: new things to learn
         print(f"continuing voice version {ck['gen']} for {steps} steps", flush=True)
     opt = torch.optim.Adam(model.parameters(), lr=lr)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, steps)

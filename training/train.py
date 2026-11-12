@@ -83,9 +83,42 @@ def load_checkpoint():
         a.load_state_dict(ck["actor"])
         c.load_state_dict(ck["critic"])
         return ck
-    except Exception as e:  # e.g. the network shape changed: start fresh
-        print("checkpoint not usable, training from scratch:", e, flush=True)
-        return None
+    except Exception as e:  # e.g. the network shape changed: grow the saved brain into the new shape
+        try:
+            return grow_checkpoint(ck)
+        except Exception as e2:
+            print("checkpoint not usable, training from scratch:", e, "/", e2, flush=True)
+            return None
+
+
+def grow_state(new_sd, old_sd):
+    """Put a smaller saved network inside a bigger new one without changing what it does.
+    Old neurons keep their weights and ignore the new senses/neurons (weight 0); new neurons
+    start random, but their outputs are weighted 0 at first, so the brain acts exactly as before
+    and the new neurons only join in as training finds a use for them."""
+    out = {}
+    for k, new in new_sd.items():
+        old = old_sd[k]
+        t = new.clone()
+        if new.dim() == 2:
+            o, i = min(old.shape[0], new.shape[0]), min(old.shape[1], new.shape[1])
+            t[:o, :] = 0
+            t[:o, :i] = old[:o, :i]
+        else:
+            o = min(old.shape[0], new.shape[0])
+            t[:o] = old[:o]
+        out[k] = t
+    return out
+
+
+def grow_checkpoint(ck):
+    a, c = Actor(), make_critic()
+    a.load_state_dict(grow_state(a.state_dict(), ck["actor"]))
+    c.load_state_dict(grow_state(c.state_dict(), ck["critic"]))
+    old_in = ck["actor"]["l1.weight"].shape
+    print(f"growing the saved brain v{ck['gen']} ({old_in[0]} neurons, {old_in[1]} senses) into "
+          f"{HIDDEN} neurons, {W.N_FEATURES} senses - it keeps everything it learned", flush=True)
+    return {"actor": a.state_dict(), "critic": c.state_dict(), "gen": ck["gen"], "score": ck.get("score"), "grown": True}
 
 
 def train(ck=None):
@@ -105,7 +138,7 @@ def train(ck=None):
             pass
         for g in opt.param_groups:
             g["lr"] = CONTINUE_LR
-        updates = CONTINUE_UPDATES
+        updates = UPDATES if ck.get("grown") else CONTINUE_UPDATES  # a grown brain has new senses to learn
         print(f"continuing from brain version {ck['gen']} for {updates} updates", flush=True)
     STATUS["total_updates"] = updates
 
@@ -387,7 +420,7 @@ if __name__ == "__main__":
             prev_gen = int(torch.load(CKPT_IN, map_location="cpu").get("gen", 0))
         except Exception:
             pass
-    write_status(mode="continue" if ck else ("fresh brain" if old_ck else ("new shape" if prev_gen else "scratch")),
+    write_status(mode=("grown" if ck.get("grown") else "continue") if ck else ("fresh brain" if old_ck else ("new shape" if prev_gen else "scratch")),
                  from_version=ck["gen"] if ck else prev_gen)
     actor, critic, opt = train(ck)
     gen = (ck["gen"] + 1) if ck else prev_gen + 1
