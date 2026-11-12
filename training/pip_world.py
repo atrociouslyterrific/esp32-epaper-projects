@@ -134,13 +134,13 @@ def act(st, se, tr, a):
     st.comfort -= eat * 0.08 * overfull
 
     ex = (a == EXPLORE).astype(float)
-    st.fun += ex * (0.03 + 0.03 * curious + 0.05 * st.novelty)
-    st.energy -= ex * 0.012
+    st.fun += ex * (0.04 + 0.04 * curious + 0.05 * st.novelty)
+    st.energy -= ex * 0.009
     st.food -= ex * 0.004
 
     pl = (a == PLAY).astype(float)
-    st.fun += pl * (0.04 + 0.03 * playful)
-    st.energy -= pl * 0.015
+    st.fun += pl * (0.05 + 0.04 * playful)
+    st.energy -= pl * 0.011
     st.social += pl * 0.03 * owner_near
 
     sg = (a == SING).astype(float)
@@ -171,8 +171,8 @@ def act(st, se, tr, a):
     # Look out the window: calm entertainment; sunshine is cosy in the day, the moon at night
     wn = (a == WINDOW).astype(float)
     day = 1.0 - night
-    st.fun += wn * (0.012 + 0.02 * curious * day + 0.008 * night)
-    st.comfort += wn * 0.02 * day
+    st.fun += wn * (0.008 + 0.012 * curious * day + 0.005 * night)
+    st.comfort += wn * 0.01 * day
     st.energy += wn * 0.001
 
     # ---- Negative feelings. Each has a cause, fades by itself, and has something that helps.
@@ -226,16 +226,18 @@ def reward(st, tr, a):
     r += like * (affectionate - 0.5) * ((a == SING) | (a == CALL))
     r += like * (0.5 - brave) * (a == HIDE)
     r += like * 0.5 * (playful - 0.5) * (a == DANCE)
-    r += like * 0.5 * (curious - 0.5) * (a == WINDOW)
+    r += like * 0.25 * (curious - 0.5) * (a == WINDOW)
     # Being active is rewarding in itself, whatever the personality
-    active = (a == EXPLORE) | (a == PLAY) | (a == SING) | (a == CALL) | (a == DANCE) | (a == WINDOW)
-    r += 0.04 * active
+    # Being active is rewarding in itself (singing is easy, so it counts half; watching isn't active)
+    active = (a == EXPLORE) | (a == PLAY) | (a == CALL) | (a == DANCE)
+    r += 0.04 * active + 0.02 * (a == SING)
     # Sleeping the day away when not tired, or eating when not hungry, feels lazy
     day = (st.prev_hour_day if hasattr(st, "prev_hour_day") else 1.0)
     r -= 0.04 * ((a == NAP) & (st.energy > 0.6)) * day
     r -= 0.03 * ((a == EAT) & (st.food > 0.7))
     # Real pets don't do one thing forever
     r -= 0.02 * ((st.repeat > 4) & (a != NAP)) + 0.02 * ((st.repeat > 12) & (a == NAP))
+    r -= 0.02 * ((st.repeat > 2) & (a == WINDOW))  # staring out of the window gets old fast
     return r
 
 

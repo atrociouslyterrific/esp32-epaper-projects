@@ -19,6 +19,10 @@ on:
         description: "Start from scratch instead of continuing from the last version"
         type: boolean
         default: false
+      fresh_brain:
+        description: "Retrain only the brain from scratch (after changing Pip's world rules); the voice keeps training"
+        type: boolean
+        default: false
       from_version:
         description: "Continue from a saved version instead of the newest, e.g. pip-b3-v3 (leave empty for newest)"
         type: string
@@ -72,6 +76,7 @@ jobs:
 
       - name: Train (live progress goes to the status website)
         env:
+          PIP_FRESH_BRAIN: ${{ github.event.inputs.fresh_brain == 'true' && '1' || '0' }}
           GITHUB_TOKEN: ${{ github.token }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |

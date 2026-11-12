@@ -314,29 +314,33 @@ if __name__ == "__main__":
         STATUS["history"] = []
     write_status(state="training")
     ck = load_checkpoint()
-    prev_gen = 0  # keep counting versions even when the brain's shape changed and it restarts
+    old_ck = ck  # the version to compare against (and count from)
+    if ck and os.environ.get("PIP_FRESH_BRAIN") == "1":
+        print("Retraining the brain from scratch (rules changed), comparing against the old one", flush=True)
+        ck = None
+    prev_gen = old_ck["gen"] if old_ck else 0  # keep counting versions even when the brain's shape changed and it restarts
     if not ck and os.path.exists(CKPT_IN):
         try:
             prev_gen = int(torch.load(CKPT_IN, map_location="cpu").get("gen", 0))
         except Exception:
             pass
-    write_status(mode="continue" if ck else ("new shape" if prev_gen else "scratch"),
+    write_status(mode="continue" if ck else ("fresh brain" if old_ck else ("new shape" if prev_gen else "scratch")),
                  from_version=ck["gen"] if ck else prev_gen)
     actor, critic, opt = train(ck)
     gen = (ck["gen"] + 1) if ck else prev_gen + 1
     # Keep the new brain only if it's at least as good as the old one (same test worlds, current rules)
     new_score = evaluate(actor)
     kept = "new"
-    if ck:
+    if old_ck:
         old = Actor()
-        old.load_state_dict(ck["actor"])
+        old.load_state_dict(old_ck["actor"])
         old_score = evaluate(old)
         print(f"test score: old brain {old_score:.4f}, new brain {new_score:.4f}", flush=True)
         if new_score < old_score - 0.002:
             kept = "old"
-            actor.load_state_dict(ck["actor"])
-            critic.load_state_dict(ck["critic"])
-            gen, new_score = ck["gen"], old_score
+            actor.load_state_dict(old_ck["actor"])
+            critic.load_state_dict(old_ck["critic"])
+            gen, new_score = old_ck["gen"], old_score
         write_status(old_score=round(old_score, 4))
     BRAIN_GEN = gen
     write_status(state="testing", brain_version=gen, kept=kept, score=round(new_score, 4))

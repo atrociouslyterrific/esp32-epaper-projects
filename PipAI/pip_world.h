@@ -124,13 +124,13 @@ static void pip_act(PipState *s, const PipSenses *se, const PipTraits *t, int a)
     s->comfort -= 0.08f * overfull;
   }
   if (a == A_EXPLORE) {
-    s->fun += 0.03f + 0.03f * t->curious + 0.05f * s->novelty;
-    s->energy -= 0.012f;
+    s->fun += 0.04f + 0.04f * t->curious + 0.05f * s->novelty;
+    s->energy -= 0.009f;
     s->food -= 0.004f;
   }
   if (a == A_PLAY) {
-    s->fun += 0.04f + 0.03f * t->playful;
-    s->energy -= 0.015f;
+    s->fun += 0.05f + 0.04f * t->playful;
+    s->energy -= 0.011f;
     s->social += 0.03f * ownerNear;
   }
   if (a == A_SING) {
@@ -153,8 +153,8 @@ static void pip_act(PipState *s, const PipSenses *se, const PipTraits *t, int a)
   // Look out the window: calm entertainment; sunshine is cosy in the day, the moon at night
   if (a == A_WINDOW) {
     float day = 1.0f - night;
-    s->fun += 0.012f + 0.02f * t->curious * day + 0.008f * night;
-    s->comfort += 0.02f * day;
+    s->fun += 0.008f + 0.012f * t->curious * day + 0.005f * night;
+    s->comfort += 0.01f * day;
     s->energy += 0.001f;
   }
 
@@ -210,12 +210,14 @@ static float pip_reward(const PipState *s, const PipTraits *t, int a, float nigh
   if (a == A_SING || a == A_CALL) r += like * (t->affectionate - 0.5f);
   if (a == A_HIDE) r += like * (0.5f - t->brave);
   if (a == A_DANCE) r += like * 0.5f * (t->playful - 0.5f);
-  if (a == A_WINDOW) r += like * 0.5f * (t->curious - 0.5f);
-  if (a == A_EXPLORE || a == A_PLAY || a == A_SING || a == A_CALL || a == A_DANCE || a == A_WINDOW) r += 0.04f;
+  if (a == A_WINDOW) r += like * 0.25f * (t->curious - 0.5f);
+  if (a == A_EXPLORE || a == A_PLAY || a == A_CALL || a == A_DANCE) r += 0.04f;
+  if (a == A_SING) r += 0.02f;
   float day = 1.0f - night;
   if (a == A_NAP && s->energy > 0.6f) r -= 0.04f * day;
   if (a == A_EAT && s->food > 0.7f) r -= 0.03f;
   if (s->repeat > 4 && a != A_NAP) r -= 0.02f;
   if (s->repeat > 12 && a == A_NAP) r -= 0.02f;
+  if (s->repeat > 2 && a == A_WINDOW) r -= 0.02f;  // staring out of the window gets old fast
   return r;
 }
