@@ -90,7 +90,11 @@ jobs:
           if [ "${{ matrix.sketch }}" = "PipAI" ]; then
             cp build/PipAI.ino.bin PipAI-ota.bin                             # just the program, for Wi-Fi updates
             echo "${{ github.run_number }}" > PipAI.version
-            ls -l PipAI-ota.bin
+            # Which brain and voice went into this program (read from the files actually compiled)
+            B=$(grep -oP 'PIP_BRAIN_VERSION \K[0-9]+' PipAI/pip_brain.h || echo 0)
+            V=$(grep -oP 'PV_VOICE_VERSION \K[0-9]+' PipAI/pip_voice.h || echo 0)
+            printf "B=%s\nV=%s\n" "$B" "$V" > PipAI.models
+            ls -l PipAI-ota.bin; cat PipAI.models
           fi
 
       - uses: actions/upload-artifact@v4
@@ -101,6 +105,7 @@ jobs:
             ${{ matrix.sketch }}.bin
             PipAI-ota.bin
             PipAI.version
+            PipAI.models
 
   publish:
     # Put the newest program files on the "latest" release page for easy download.
@@ -109,10 +114,6 @@ jobs:
     if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.event_name == 'workflow_run')
     runs-on: ubuntu-24.04-arm  # ARM pool: the x64 ubuntu-latest/24.04 runners stopped picking up jobs (Nov 2026)
     steps:
-      - uses: actions/checkout@v4   # to read the brain and voice version numbers
-        with:
-          ref: ${{ github.event_name == 'workflow_run' && 'main' || '' }}
-          path: repo
       - uses: actions/download-artifact@v4
         with:
           merge-multiple: true
@@ -136,8 +137,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           FW=$(cat PipAI.version)
-          B=$(grep -oP 'PIP_BRAIN_VERSION \K[0-9]+' repo/PipAI/pip_brain.h || echo 0)
-          V=$(grep -oP 'PV_VOICE_VERSION \K[0-9]+' repo/PipAI/pip_voice.h || echo 0)
+          . ./PipAI.models   # B and V: the brain and voice versions compiled into this PipAI.bin
           # The website reads this line to show which version is on GitHub right now
           gh release edit latest --notes "PipAI version $FW · brain v$B · voice v$V · built $(date -u +%Y-%m-%dT%H:%M:%SZ)
           Flash PipAI.bin with https://espressif.github.io/esptool-js/ at address 0x0. Pip also downloads new versions by itself over Wi-Fi."
