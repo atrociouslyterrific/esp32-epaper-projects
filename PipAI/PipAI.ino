@@ -33,6 +33,10 @@
 #include "pip_world.h"
 #include "pip_brain.h"
 #include "pip_voice.h"   // Pip's generative voice (trained by training/train_voice.py)
+#if __has_include("pip_motion.h")
+#include "pip_motion.h"  // Pip's generative movement (trained by training/train_motion.py)
+#define PIP_HAS_MOTION 1
+#endif
 #include "pip_github_roots.h"
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
@@ -1035,11 +1039,50 @@ int targetFor(int a) {
   }
 }
 
-void setKeys(const Key *k, int n) { keys = k; keyLen = n; performStep = 0; }
+// Generated movement: the motion model writes a fresh clip (step, jump, squash per frame)
+// every time Pip does something, so no two moves are the same.
+Key genKeys[24];
+int8_t genDx[24];
+bool genMoves = false;  // does the current clip move Pip sideways?
+
+void setKeys(const Key *k, int n) { keys = k; keyLen = n; performStep = 0; genMoves = false; }
+
+float motionRand() { return (esp_random() >> 8) / 16777216.0f; }
+
+// The motion model's mood: 0 happy, 1 tired, 2 sad/scared, 3 grumpy.
+int motionMood() {
+  if (pip.grumpy > 0.35f || pip.frustrated > 0.35f) return 3;
+  if (pip.scared > 0.35f || pip.sulky > 0.35f || pip.fun < 0.2f) return 2;
+  if (pip.energy < 0.3f) return 1;
+  return 0;
+}
+
+// act = one of Pip's actions, or 12 for a little fidget. Returns false if there's no model.
+bool playGenerated(int act) {
+#ifdef PIP_HAS_MOTION
+  int8_t dx[PM_MAX_FRAMES], jy[PM_MAX_FRAMES];
+  uint8_t sq[PM_MAX_FRAMES];
+  int energy = pip.energy < 0.33f ? 0 : pip.energy < 0.66f ? 1 : 2;
+  int n = pm_generate(act, motionMood(), energy, dx, jy, sq, min(PM_MAX_FRAMES, 24), 0.8f, motionRand);
+  if (n <= 0) return false;
+  // At the bed, bowl, box and window Pip stays put; everywhere else it can move around
+  bool stay = act == A_NAP || act == A_EAT || act == A_HIDE || act == A_WARM_UP || act == A_WINDOW;
+  for (int i = 0; i < n; i++) { genKeys[i].y = jy[i]; genKeys[i].sq = sq[i]; genDx[i] = stay ? 0 : dx[i]; }
+  setKeys(genKeys, n);
+  genMoves = !stay;
+  return true;
+#else
+  (void)act;
+  return false;
+#endif
+}
 
 void beginPerform() {
   animMode = AN_PERFORM;
   setKeys(nullptr, 0);
+  if (action == A_EAT) facing = (snackX >= 0) ? (snackX > pipX ? 1 : -1) : 1;
+  if (playGenerated(action)) return;  // the motion model invents the move
+  // (no motion model yet: the hand-made moves)
   if (action == A_PLAY) setKeys(K_PLAY, sizeof(K_PLAY) / sizeof(Key));
   else if (action == A_CALL) setKeys(K_CALL, sizeof(K_CALL) / sizeof(Key));
   else if (action == A_SING) setKeys(K_SING, sizeof(K_SING) / sizeof(Key));
@@ -1100,11 +1143,16 @@ bool animFrame() {
   }
   if (animMode == AN_PERFORM) {
     if (keys && performStep < keyLen) {
+      if (genMoves && genDx[performStep] != 0) {
+        int d = genDx[performStep];
+        pipX = constrain(pipX + d, 16, 184);
+        facing = d > 0 ? 1 : -1;
+      }
       pipJump = keys[performStep].y;
       squash = keys[performStep].sq;
       performStep++;
       if (action == A_PLAY && pipJump <= -20) facing = -facing;  // turns in the air
-      if (action == A_DANCE) facing = (performStep % 2) ? 1 : -1;  // dances side to side
+      if (action == A_DANCE && !genMoves) facing = (performStep % 2) ? 1 : -1;  // dances side to side
       return true;
     }
     bool settle = squash != 100 || pipJump != 0 || performStep == 0;
@@ -1121,7 +1169,10 @@ void ambient() {
   bool still = action == A_NAP || action == A_HIDE || action == A_WARM_UP;
   if (still) { nextAmbientAt = millis() + 60000UL; return; }
   uint32_t r = esp_random() % 4;
-  if (r == 0) {
+  if ((r == 0 || r == 2) && playGenerated(12)) {  // a fidget the motion model makes up
+    animMode = AN_PERFORM;
+    nextFrameAt = millis();
+  } else if (r == 0) {
     startHop();
   } else if (r == 1) {
     facing = -facing;

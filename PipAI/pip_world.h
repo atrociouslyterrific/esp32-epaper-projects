@@ -21,6 +21,8 @@ typedef struct {
 typedef struct {
   float food, energy, fun, comfort, social;  // 0..1
   float grumpy, sulky, scared, frustrated;   // negative feelings, 0..1
+  float hab[PIP_N_ACTIONS];  // habituation: how much Pip has done each action lately
+  float habUsed;             // habituation of the action just done (for the reward)
   int prevAction;
   float repeat;
   float touchRecent;
@@ -31,7 +33,7 @@ typedef struct {
   int prevOrient;
 } PipState;
 
-#define PIP_N_FEATURES 40
+#define PIP_N_FEATURES 52
 
 static inline float pip_clamp01(float v) { return v < 0 ? 0 : (v > 1 ? 1 : v); }
 static inline float pip_clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
@@ -51,6 +53,8 @@ static void pip_clamp_needs(PipState *s) {
 static void pip_init(PipState *s, float food, float energy, float fun, float comfort, float social) {
   s->food = food; s->energy = energy; s->fun = fun; s->comfort = comfort; s->social = social;
   s->grumpy = s->sulky = s->scared = s->frustrated = 0;
+  for (int k = 0; k < PIP_N_ACTIONS; k++) s->hab[k] = 0;
+  s->habUsed = 0;
   s->prevAction = 0; s->repeat = 0; s->touchRecent = 0; s->novelty = 0;
   s->prevTemp = 0; s->hasPrevTemp = 0; s->prevSound = 0; s->prevOrient = 0;
 }
@@ -86,6 +90,7 @@ static void pip_features(const PipState *s, const PipSenses *se, const PipTraits
   x[i++] = t->curious; x[i++] = t->playful; x[i++] = t->lazy; x[i++] = t->brave; x[i++] = t->affectionate;
   for (int k = 0; k < PIP_N_ACTIONS; k++) x[i++] = (s->prevAction == k) ? 1.0f : 0.0f;
   x[i++] = (s->repeat < 10 ? s->repeat : 10) / 10.0f;
+  for (int k = 0; k < PIP_N_ACTIONS; k++) x[i++] = s->hab[k];
 }
 
 // Do the chosen action for one step (3 minutes), plus natural drift.
@@ -95,6 +100,8 @@ static void pip_act(PipState *s, const PipSenses *se, const PipTraits *t, int a)
   float hot = pip_clamp01((T - 26.0f) / 8.0f);
   float flip = se->orient == 3 ? 0.4f : (se->orient == 2 ? 0.15f : 0.0f);
   float hiding = a == A_HIDE ? 1.0f : 0.0f;
+  float habA = s->hab[a];          // how much Pip has done this lately
+  float fresh = 1 - 0.6f * habA;   // fun wears off when you keep doing the same thing
   float noise = sound * 0.5f * (1 - 0.6f * t->brave) * (1 - 0.5f * hiding);
   float envComfort = pip_clamp01(1.0f - cold - hot - noise - flip * (1 - 0.5f * hiding));
   float napping = a == A_NAP ? 1.0f : 0.0f;
@@ -124,17 +131,17 @@ static void pip_act(PipState *s, const PipSenses *se, const PipTraits *t, int a)
     s->comfort -= 0.08f * overfull;
   }
   if (a == A_EXPLORE) {
-    s->fun += 0.04f + 0.04f * t->curious + 0.05f * s->novelty;
+    s->fun += (0.04f + 0.04f * t->curious + 0.05f * s->novelty) * fresh;
     s->energy -= 0.009f;
     s->food -= 0.004f;
   }
   if (a == A_PLAY) {
-    s->fun += 0.05f + 0.04f * t->playful;
+    s->fun += (0.05f + 0.04f * t->playful) * fresh;
     s->energy -= 0.011f;
     s->social += 0.03f * ownerNear;
   }
   if (a == A_SING) {
-    s->fun += 0.015f;
+    s->fun += 0.01f * fresh;
     s->social += 0.01f + 0.02f * t->affectionate * ownerNear;
     s->energy -= 0.004f;
   }
@@ -145,7 +152,7 @@ static void pip_act(PipState *s, const PipSenses *se, const PipTraits *t, int a)
 
   // Dance: big fun for playful Pips, even better with someone watching
   if (a == A_DANCE) {
-    s->fun += 0.035f + 0.02f * t->playful;
+    s->fun += (0.035f + 0.02f * t->playful) * fresh;
     s->social += 0.04f * ownerNear;
     s->energy -= 0.012f;
     s->food -= 0.003f;
@@ -153,7 +160,7 @@ static void pip_act(PipState *s, const PipSenses *se, const PipTraits *t, int a)
   // Look out the window: calm entertainment; sunshine is cosy in the day, the moon at night
   if (a == A_WINDOW) {
     float day = 1.0f - night;
-    s->fun += 0.008f + 0.012f * t->curious * day + 0.005f * night;
+    s->fun += (0.008f + 0.012f * t->curious * day + 0.005f * night) * fresh;
     s->comfort += 0.01f * day;
     s->energy += 0.001f;
   }
@@ -182,6 +189,10 @@ static void pip_act(PipState *s, const PipSenses *se, const PipTraits *t, int a)
 
   pip_clamp_needs(s);
   s->repeat = (a == s->prevAction) ? s->repeat + 1 : 0;
+  // Habituation fades over time and builds up for whatever Pip just did
+  s->habUsed = habA;
+  for (int k = 0; k < PIP_N_ACTIONS; k++) s->hab[k] *= 0.92f;
+  s->hab[a] = s->hab[a] + 0.08f < 1.0f ? s->hab[a] + 0.08f : 1.0f;
   s->prevAction = a;
   s->prevTemp = se->tempC; s->hasPrevTemp = 1;
   s->prevSound = se->sound;
@@ -212,7 +223,10 @@ static float pip_reward(const PipState *s, const PipTraits *t, int a, float nigh
   if (a == A_DANCE) r += like * 0.5f * (t->playful - 0.5f);
   if (a == A_WINDOW) r += like * 0.25f * (t->curious - 0.5f);
   if (a == A_EXPLORE || a == A_PLAY || a == A_CALL || a == A_DANCE) r += 0.04f;
-  if (a == A_SING) r += 0.02f;
+  if (a == A_SING) r += 0.01f;
+  // Doing the same thing over and over is dull (except napping when tired / eating when hungry)
+  int needed = (a == A_NAP && s->energy < 0.4f) || (a == A_EAT && s->food < 0.4f);
+  if (!needed) r -= 0.1f * s->habUsed;
   float day = 1.0f - night;
   if (a == A_NAP && s->energy > 0.6f) r -= 0.04f * day;
   if (a == A_EAT && s->food > 0.7f) r -= 0.03f;

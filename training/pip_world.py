@@ -20,7 +20,7 @@ NEEDS = ["food", "energy", "fun", "comfort", "social"]
 EMOTIONS = ["grumpy", "sulky", "scared", "frustrated"]  # negative feelings: 0 = none, 1 = very
 
 # Orientation: 0 = no sensor, 1 = upright, 2 = tilted, 3 = upside down
-N_FEATURES = 40  # 36 + the 4 feelings
+N_FEATURES = 52  # 36 + 4 feelings + 12 'how often have I done this lately'
 
 
 class PipState:
@@ -41,6 +41,9 @@ class PipState:
         self.prev_orient = np.zeros(B, dtype=np.int64)
         for name in EMOTIONS:
             setattr(self, name, np.zeros(B))
+        # Habituation: how much Pip has done each action lately (0 = not at all, 1 = constantly)
+        self.hab = np.zeros((B, N_ACTIONS))
+        self.hab_used = np.zeros(B)
 
     def reset(self, mask, rng):
         n = int(mask.sum())
@@ -55,6 +58,8 @@ class PipState:
         self.prev_orient[mask] = 0
         for name in EMOTIONS:
             getattr(self, name)[mask] = 0
+        self.hab[mask] = 0
+        self.hab_used[mask] = 0
 
     def clamp(self):
         for name in NEEDS + EMOTIONS:
@@ -91,7 +96,7 @@ def features(st, se, tr):
         se["sound"], se["battery"], se["charging"].astype(float),
         np.minimum(st.touch_recent, 1.0),
     ]
-    x = np.column_stack(cols + [orient, st.novelty[:, None], tr, prev, (np.minimum(st.repeat, 10) / 10.0)[:, None]])
+    x = np.column_stack(cols + [orient, st.novelty[:, None], tr, prev, (np.minimum(st.repeat, 10) / 10.0)[:, None], st.hab])
     assert x.shape[1] == N_FEATURES
     return x
 
@@ -104,6 +109,8 @@ def act(st, se, tr, a):
     hot = np.clip((T - 26.0) / 8.0, 0, 1)
     flip = np.where(se["orient"] == 3, 0.4, np.where(se["orient"] == 2, 0.15, 0.0))
     hiding = (a == HIDE).astype(float)
+    hab_a = st.hab[np.arange(len(a)), a]   # how much Pip has done this lately
+    fresh = 1 - 0.6 * hab_a                 # fun wears off when you keep doing the same thing
     noise = sound * 0.5 * (1 - 0.6 * brave) * (1 - 0.5 * hiding)
     env_comfort = np.clip(1.0 - cold - hot - noise - flip * (1 - 0.5 * hiding), 0, 1)
     napping = (a == NAP).astype(float)
@@ -134,17 +141,17 @@ def act(st, se, tr, a):
     st.comfort -= eat * 0.08 * overfull
 
     ex = (a == EXPLORE).astype(float)
-    st.fun += ex * (0.04 + 0.04 * curious + 0.05 * st.novelty)
+    st.fun += ex * (0.04 + 0.04 * curious + 0.05 * st.novelty) * fresh
     st.energy -= ex * 0.009
     st.food -= ex * 0.004
 
     pl = (a == PLAY).astype(float)
-    st.fun += pl * (0.05 + 0.04 * playful)
+    st.fun += pl * (0.05 + 0.04 * playful) * fresh
     st.energy -= pl * 0.011
     st.social += pl * 0.03 * owner_near
 
     sg = (a == SING).astype(float)
-    st.fun += sg * 0.015
+    st.fun += sg * 0.01 * fresh
     st.social += sg * (0.01 + 0.02 * affectionate * owner_near)
     st.energy -= sg * 0.004
 
@@ -163,7 +170,7 @@ def act(st, se, tr, a):
 
     # Dance: big fun for playful Pips, even better with someone watching
     dn = (a == DANCE).astype(float)
-    st.fun += dn * (0.035 + 0.02 * playful)
+    st.fun += dn * (0.035 + 0.02 * playful) * fresh
     st.social += dn * 0.04 * owner_near
     st.energy -= dn * 0.012
     st.food -= dn * 0.003
@@ -171,7 +178,7 @@ def act(st, se, tr, a):
     # Look out the window: calm entertainment; sunshine is cosy in the day, the moon at night
     wn = (a == WINDOW).astype(float)
     day = 1.0 - night
-    st.fun += wn * (0.008 + 0.012 * curious * day + 0.005 * night)
+    st.fun += wn * (0.008 + 0.012 * curious * day + 0.005 * night) * fresh
     st.comfort += wn * 0.01 * day
     st.energy += wn * 0.001
 
@@ -198,6 +205,10 @@ def act(st, se, tr, a):
 
     st.clamp()
     st.repeat = np.where(a == st.prev_action, st.repeat + 1, 0)
+    # Habituation fades over time and builds up for whatever Pip just did
+    st.hab_used = hab_a
+    st.hab *= 0.92
+    st.hab[np.arange(len(a)), a] = np.minimum(1.0, st.hab[np.arange(len(a)), a] + 0.08)
     st.prev_action = a.copy()
     st.prev_temp = se["temp"].copy()
     st.prev_sound = se["sound"].copy()
@@ -230,7 +241,10 @@ def reward(st, tr, a):
     # Being active is rewarding in itself, whatever the personality
     # Being active is rewarding in itself (singing is easy, so it counts half; watching isn't active)
     active = (a == EXPLORE) | (a == PLAY) | (a == CALL) | (a == DANCE)
-    r += 0.04 * active + 0.02 * (a == SING)
+    r += 0.04 * active + 0.01 * (a == SING)
+    # Doing the same thing over and over is dull (except napping when tired / eating when hungry)
+    needed = ((a == NAP) & (st.energy < 0.4)) | ((a == EAT) & (st.food < 0.4))
+    r -= 0.1 * st.hab_used * (~needed)
     # Sleeping the day away when not tired, or eating when not hungry, feels lazy
     day = (st.prev_hour_day if hasattr(st, "prev_hour_day") else 1.0)
     r -= 0.04 * ((a == NAP) & (st.energy > 0.6)) * day

@@ -50,6 +50,10 @@ jobs:
           gh release download checkpoints -R "${{ github.repository }}" -p pip_brain.h -p pip_voice.h -D PipAI --clobber \
             && echo "Using the models from the checkpoints release" \
             || echo "No models in the checkpoints release yet - using the repo's copies"
+          # Pip's movement model (newer; Pip uses its hand-made moves until one has been trained)
+          gh release download checkpoints -R "${{ github.repository }}" -p pip_motion.h -D PipAI --clobber \
+            && echo "Using the motion model from the checkpoints release" \
+            || echo "No motion model yet - Pip uses its hand-made moves"
 
       - name: Check the sketch is ready
         id: ready
@@ -64,6 +68,11 @@ jobs:
             # The program was changed to use a new kind of brain, but the saved brain is still
             # the old kind. Training is making the new one; the build runs again when it's done.
             echo "PipAI's saved brain is older than the program (no pip_hidden) - skipping until training finishes."
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          elif [ "${{ matrix.sketch }}" = "PipAI" ] && \
+               [ "$(grep -oP 'define PIP_N_FEATURES \K[0-9]+' PipAI/pip_world.h)" != "$(grep -oP 'define PIP_N_IN \K[0-9]+' PipAI/pip_brain.h)" ]; then
+            # Pip's senses changed (e.g. habituation was added); the saved brain was trained for the old ones.
+            echo "PipAI's saved brain was trained for different senses - skipping until training finishes."
             echo "go=false" >> "$GITHUB_OUTPUT"
           else
             echo "go=true" >> "$GITHUB_OUTPUT"

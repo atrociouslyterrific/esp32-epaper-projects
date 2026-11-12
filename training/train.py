@@ -45,10 +45,11 @@ def write_status(**changes):
     """Save training progress; the workflow uploads this file for the status website."""
     STATUS.update(changes)
     STATUS["updated"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    try:  # the voice trains at the same time and writes its own part of this file: keep it
-        voice = json.load(open(STATUS_PATH)).get("voice")
-        if voice is not None:
-            STATUS["voice"] = voice
+    try:  # the voice and motion models train at the same time and write their own parts: keep them
+        saved = json.load(open(STATUS_PATH))
+        for part in ("voice", "motion"):
+            if saved.get(part) is not None:
+                STATUS[part] = saved[part]
     except Exception:
         pass
     tmp = STATUS_PATH + ".tmp"

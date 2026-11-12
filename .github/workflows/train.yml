@@ -85,14 +85,17 @@ jobs:
           python training/train.py & BRAIN_PID=$!
           sleep 5   # let the brain write the first progress file
           python training/train_voice.py & VOICE_PID=$!
-          while kill -0 $BRAIN_PID 2>/dev/null || kill -0 $VOICE_PID 2>/dev/null; do
+          sleep 5
+          python training/train_motion.py & MOTION_PID=$!   # small movement model, 1 core
+          while kill -0 $BRAIN_PID 2>/dev/null || kill -0 $VOICE_PID 2>/dev/null || kill -0 $MOTION_PID 2>/dev/null; do
             sleep 20
             training/push_status.sh || true
           done
           wait $BRAIN_PID; B=$?
           wait $VOICE_PID; V=$?
-          echo "brain exit $B, voice exit $V"
-          [ $B -eq 0 ] && [ $V -eq 0 ]
+          wait $MOTION_PID; M=$?
+          echo "brain exit $B, voice exit $V, motion exit $M"
+          [ $B -eq 0 ] && [ $V -eq 0 ] && [ $M -eq 0 ]
 
       - name: Check the C brain + world match Python
         env:
@@ -107,6 +110,10 @@ jobs:
           ./test_voice training/out/voice_test.txt | tee -a test.txt
           vresult=${PIPESTATUS[0]}
           [ "$result" = 0 ] && result=$vresult
+          gcc -O2 -I PipAI training/test_motion.c -lm -o test_motion
+          ./test_motion training/out/motion_test.txt | tee -a test.txt
+          mresult=${PIPESTATUS[0]}
+          [ "$result" = 0 ] && result=$mresult
           set -e
           python - "$result" <<'EOF'
           import json, sys
@@ -165,6 +172,7 @@ jobs:
             training/out/
             PipAI/pip_brain.h
             PipAI/pip_voice.h
+            PipAI/pip_motion.h
 
       - name: Save checkpoints for the next training run
         env:
@@ -177,9 +185,9 @@ jobs:
           # The trained models live here (not in the repo, which would grow by ~1.5 MB every hour).
           # The build downloads pip_brain.h / pip_voice.h from this release.
           gh release upload checkpoints -R "${{ github.repository }}" --clobber \
-            training/out/ckpt/brain.pt training/out/ckpt/voice.pt PipAI/pip_brain.h PipAI/pip_voice.h
+            training/out/ckpt/brain.pt training/out/ckpt/voice.pt PipAI/pip_brain.h PipAI/pip_voice.h PipAI/pip_motion.h
           # ...and a copy for the status website (status branch, which is always a single commit)
-          mkdir -p training/out/models && cp PipAI/pip_brain.h PipAI/pip_voice.h training/out/models/
+          mkdir -p training/out/models && cp PipAI/pip_brain.h PipAI/pip_voice.h PipAI/pip_motion.h training/out/models/
           bash training/push_status.sh
 
       - name: Archive this version (its own release, so it can be flashed or trained from later)
@@ -204,7 +212,7 @@ jobs:
               --notes "Saved version of Pip. Brain test score $SCORE (higher is better), voice test loss $LOSS (lower is better). Trained $(date -u +%Y-%m-%dT%H:%MZ) by run ${{ github.run_id }}. PipAI.bin is added when it has been built. To keep training from this version: Actions > Train Pip brain > Run workflow > from_version = $TAG"
           cp training/out/report.md personality_report.md
           gh release upload "$TAG" -R "${{ github.repository }}" --clobber \
-            training/out/ckpt/brain.pt training/out/ckpt/voice.pt PipAI/pip_brain.h PipAI/pip_voice.h personality_report.md
+            training/out/ckpt/brain.pt training/out/ckpt/voice.pt PipAI/pip_brain.h PipAI/pip_voice.h PipAI/pip_motion.h personality_report.md
           echo "Archived as $TAG"
 
       - name: Save the personality report to the repo (small; the models themselves live in releases)
