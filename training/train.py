@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 import pip_world as W  # noqa: E402
 
 SEED = 7
-HIDDEN = 256  # neurons per hidden layer (was 160, 96, 48)
+HIDDEN = 512  # neurons per hidden layer (was 256, 160, 96, 48)
 ENVS = 128
 ROLLOUT = 256
 UPDATES = int(os.environ.get("PIP_UPDATES", "1500"))            # training from scratch
@@ -170,7 +170,7 @@ def train(ck=None):
 
         mix = np.bincount(acts.ravel(), minlength=W.N_ACTIONS) / acts.size
         STATUS["reward_history"].append(round(float(rews.mean()), 5))
-        if update % 100 == 0 or update == updates - 1:
+        if update % 300 == 0 or update == updates - 1:
             # Live weights for the status website, in their own file (too big for the progress file)
             r2 = lambda t: [[round(float(v), 2) for v in row] for row in t.detach().numpy()]
             r2b = lambda t: [round(float(v), 2) for v in t.detach()]

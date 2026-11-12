@@ -1024,10 +1024,10 @@ function renderWeights() {
   const actionNames = ACTIONS.map(a => a.replace("_", " "));
   const influence = matMul(matMul(brain.W3, brain.W2), brain.W1);  // 10 x 34
   drawHeat($("w-influence"), influence, { cell: 16, rowLabels: actionNames, colLabels: INPUT_NAMES, labelW: 80, labelH: 104 });
-  drawHeat($("w-1"), brain.W1, { cell: 4, rowName: "neuron A", colName: "input" });
+  drawHeat($("w-1"), brain.W1, { cell: brain.W1.length > 256 ? 2 : 4, rowName: "neuron A", colName: "input" });
   $("w-1")._hit.colLabels = INPUT_NAMES;  // names show on hover
-  drawHeat($("w-2"), brain.W2, { cell: 3, rowName: "neuron B", colName: "neuron A" });
-  drawHeat($("w-3"), brain.W3, { cell: 4, rowLabels: actionNames, labelW: 70, rowName: "action", colName: "neuron B" });
+  drawHeat($("w-2"), brain.W2, { cell: brain.W2.length > 256 ? 1 : 3, rowName: "neuron B", colName: "neuron A" });
+  drawHeat($("w-3"), brain.W3, { cell: brain.W3[0].length > 256 ? 2 : 4, rowLabels: actionNames, labelW: 70, rowName: "action", colName: "neuron B" });
   // Histogram
   const bins = 40, lo = -absMax, hi = absMax, counts = Array(bins).fill(0);
   all.forEach(v => counts[Math.min(bins - 1, Math.floor((v - lo) / (hi - lo) * bins))]++);
@@ -1112,7 +1112,7 @@ function parseVoice(text) {
   return [v.Wih, v.Whh, v.bih, v.bhh, v.Wo, v.bo].every(Boolean) ? v : null;
 }
 async function loadVoice() {
-  if (voice && Date.now() - voiceFetchedAt < 300000) return;
+  if (voice && Date.now() - voiceFetchedAt < 1800000) return;  // the voice file is big: re-check every 30 min
   try {
     let r = await fetch(`https://raw.githubusercontent.com/${REPO}/status/models/pip_voice.h`, { cache: "no-store" });
     if (!r.ok) r = await fetch(`https://raw.githubusercontent.com/${REPO}/main/PipAI/pip_voice.h`, { cache: "no-store" });  // older runs kept it in the repo
@@ -1232,10 +1232,10 @@ function renderVoiceWeights() {
   const rows = (flat, n, m, transpose) => transpose
     ? Array.from({ length: m }, (_, i) => Array.from({ length: n }, (_, j) => flat[j * m + i]))
     : Array.from({ length: n }, (_, i) => Array.from(flat.slice(i * m, (i + 1) * m)));
-  drawHeat($("v-ih"), rows(Wih, 3 * H, V, true), { cell: 2, rowLabels: labels, labelW: 54, rowName: "letter", colName: "memory gate" });
-  $("v-ih")._hit.cell = 2;
-  drawHeat($("v-o"), rows(Wo, V, H), { cell: 3, rowLabels: labels, labelW: 54, rowName: "letter", colName: "memory cell" });
-  ["hr", "hz", "hn"].forEach((g, gi) => drawHeat($("v-" + g), rows(Whh.slice(gi * H * H, (gi + 1) * H * H), H, H), { cell: 2, rowName: "cell", colName: "cell" }));
+  drawHeat($("v-ih"), rows(Wih, 3 * H, V, true), { cell: H > 256 ? 1 : 2, rowLabels: labels, labelW: 54, rowName: "letter", colName: "memory gate" });
+  $("v-ih")._hit.cell = H > 256 ? 1 : 2;
+  drawHeat($("v-o"), rows(Wo, V, H), { cell: H > 256 ? 1 : 3, rowLabels: labels, labelW: 54, rowName: "letter", colName: "memory cell" });
+  ["hr", "hz", "hn"].forEach((g, gi) => drawHeat($("v-" + g), rows(Whh.slice(gi * H * H, (gi + 1) * H * H), H, H), { cell: H > 256 ? 1 : 2, rowName: "cell", colName: "cell" }));
   // histogram
   const bins = 40, counts = Array(bins).fill(0);
   for (const v of all) counts[Math.min(bins - 1, Math.floor((v + absMax) / (2 * absMax) * bins))]++;

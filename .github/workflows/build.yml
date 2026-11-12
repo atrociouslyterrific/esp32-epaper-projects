@@ -24,9 +24,9 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # min_spiffs = two 1.9 MB program slots, so Pip can download an update into the
-  # spare slot over Wi-Fi and switch to it (PipAI is about 1.3 MB)
-  FQBN: esp32:esp32:esp32s3:CDCOnBoot=cdc,PartitionScheme=min_spiffs
+  # The V2 board has 8 MB of flash: two 3 MB program slots (so Pip can download an update
+  # into the spare one over Wi-Fi) plus 1.5 MB of file storage (Pip saves its learning there).
+  FQBN: esp32:esp32:esp32s3:CDCOnBoot=cdc,FlashSize=8M,PartitionScheme=default_8MB
 
 jobs:
   build:

@@ -38,6 +38,8 @@
 #include <HTTPClient.h>
 #include <HTTPUpdate.h>
 #include <SD_MMC.h>
+#include <LittleFS.h>   // the board's own file storage (Pip's learning is saved here)
+SET_LOOP_TASK_STACK_SIZE(32 * 1024);  // big brain + voice: give loop() 32 KB of working memory (default 8 KB)
 #include <esp_now.h>   // short-range radio messages to and from Bloop
 #include <esp_wifi.h>
 #include <Ticker.h>
@@ -314,36 +316,48 @@ bool baselineSet = false;
 unsigned long learnSteps = 0;
 const float LEARN_RATE = 0.002f;   // small steps: Pip changes slowly, over days
 const float MAX_DRIFT = 1.0f;      // never drift further than this from the trained brain
-Preferences learnPrefs;
 
 void brainForward(const float *x, float *logits) {
   pip_hidden(x, lastH2);   // layers 1-2 (8-bit weights from training)
   pip_dense(liveW3, liveB3, lastH2, PIP_N_HID, PIP_N_OUT, logits, 0);  // layer 3, which keeps learning
 }
 
+// What Pip has learned is saved in a file on the board's own flash (/learn.bin), not in
+// Preferences: with a big brain the learned layer is far larger than Preferences can hold.
+struct LearnHeader { uint32_t magic, brainVersion, nOut, nHid; unsigned long steps; float baseline, recent; };
+const uint32_t LEARN_MAGIC = 0x50495031;  // "PIP1"
+bool fsOk = false;
+
 void saveLearning() {
-  learnPrefs.putUInt("ver", PIP_BRAIN_VERSION);
-  learnPrefs.putBytes("w3", liveW3, sizeof(liveW3));
-  learnPrefs.putBytes("b3", liveB3, sizeof(liveB3));
-  learnPrefs.putFloat("base", rewardBaseline);
-  learnPrefs.putFloat("recent", recentReward);
-  learnPrefs.putULong("steps", learnSteps);
+  if (!fsOk) return;
+  File f = LittleFS.open("/learn.tmp", "w");
+  if (!f) return;
+  LearnHeader h = {LEARN_MAGIC, (uint32_t)PIP_BRAIN_VERSION, PIP_N_OUT, PIP_N_HID, learnSteps, rewardBaseline, recentReward};
+  bool ok = f.write((const uint8_t *)&h, sizeof(h)) == sizeof(h) &&
+            f.write((const uint8_t *)liveW3, sizeof(liveW3)) == sizeof(liveW3) &&
+            f.write((const uint8_t *)liveB3, sizeof(liveB3)) == sizeof(liveB3);
+  f.close();
+  if (ok) { LittleFS.remove("/learn.bin"); LittleFS.rename("/learn.tmp", "/learn.bin"); }  // never leave a half-written file
 }
 
 void loadLearning() {
   memcpy(liveW3, PIP_W3, sizeof(liveW3));
   memcpy(liveB3, PIP_B3, sizeof(liveB3));
-  learnPrefs.begin("learn", false);
-  if (learnPrefs.getUInt("ver", 0xFFFFFFFF) == (uint32_t)PIP_BRAIN_VERSION &&
-      learnPrefs.getBytesLength("w3") == sizeof(liveW3) && learnPrefs.getBytesLength("b3") == sizeof(liveB3)) {
-    learnPrefs.getBytes("w3", liveW3, sizeof(liveW3));
-    learnPrefs.getBytes("b3", liveB3, sizeof(liveB3));
-    rewardBaseline = learnPrefs.getFloat("base", 0);
-    recentReward = learnPrefs.getFloat("recent", 0);
-    learnSteps = learnPrefs.getULong("steps", 0);
+  fsOk = LittleFS.begin(true);  // formats the storage the first time
+  if (!fsOk) { Serial.println("Board file storage unavailable: learning won't be saved"); return; }
+  File f = LittleFS.open("/learn.bin", "r");
+  LearnHeader h = {};
+  bool ok = f && f.read((uint8_t *)&h, sizeof(h)) == sizeof(h) && h.magic == LEARN_MAGIC &&
+            h.brainVersion == (uint32_t)PIP_BRAIN_VERSION && h.nOut == PIP_N_OUT && h.nHid == PIP_N_HID;
+  if (ok) ok = f.read((uint8_t *)liveW3, sizeof(liveW3)) == sizeof(liveW3) && f.read((uint8_t *)liveB3, sizeof(liveB3)) == sizeof(liveB3);
+  if (f) f.close();
+  if (ok) {
+    learnSteps = h.steps; rewardBaseline = h.baseline; recentReward = h.recent;
     baselineSet = learnSteps > 0;
     Serial.printf("Loaded %lu steps of on-board learning\n", learnSteps);
   } else {
+    memcpy(liveW3, PIP_W3, sizeof(liveW3));  // (in case a bad file half-loaded)
+    memcpy(liveB3, PIP_B3, sizeof(liveB3));
     Serial.println("New brain version: on-board learning starts fresh");
   }
 }

@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 import speech_corpus as SC  # noqa: E402
 
 SEED = 11
-HIDDEN = 256  # memory cells (was 160, 128, 96)
+HIDDEN = 512  # memory cells (was 256, 160, 128, 96)
 STEPS = int(os.environ.get("PIP_VOICE_STEPS", "5000"))                 # from scratch
 CONTINUE_STEPS = int(os.environ.get("PIP_VOICE_CONTINUE_STEPS", "2000"))  # nightly top-up
 CONTINUE_LR = 1e-3
