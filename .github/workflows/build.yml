@@ -57,6 +57,11 @@ jobs:
           if [ "${{ matrix.sketch }}" = "PipAI" ] && { [ ! -f PipAI/pip_brain.h ] || [ ! -f PipAI/pip_voice.h ]; }; then
             echo "PipAI's brain or voice hasn't been trained yet - skipping until training finishes."
             echo "go=false" >> "$GITHUB_OUTPUT"
+          elif [ "${{ matrix.sketch }}" = "PipAI" ] && grep -q 'pip_hidden(' PipAI/PipAI.ino && ! grep -q 'pip_hidden' PipAI/pip_brain.h; then
+            # The program was changed to use a new kind of brain, but the saved brain is still
+            # the old kind. Training is making the new one; the build runs again when it's done.
+            echo "PipAI's saved brain is older than the program (no pip_hidden) - skipping until training finishes."
+            echo "go=false" >> "$GITHUB_OUTPUT"
           else
             echo "go=true" >> "$GITHUB_OUTPUT"
           fi
