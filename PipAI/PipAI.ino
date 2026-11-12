@@ -862,6 +862,23 @@ struct __attribute__((packed)) PalMsg {
 enum : uint8_t { PAL_PIP = 1, PAL_BLOOP = 2 };
 enum : uint8_t { PALF_SAD = 1, PALF_ASLEEP = 2 };
 
+// A spoken line: Pip and Bloop talk to each other while they're together.
+// Must match the copy in bloop_room/visitor.h.
+struct __attribute__((packed)) PalSay {
+  uint8_t magic[4];   // "PALS"
+  uint8_t who;        // PAL_PIP or PAL_BLOOP
+  uint8_t seq;        // the sender's line number (goes up by 1 each line, never 0)
+  uint8_t replyTo;    // the other pet's line this answers (0 = starts a new topic)
+  char text[58];      // what was said, ending in a 0 byte
+};
+// What Bloop just said: written by the radio, picked up by loop().
+volatile bool bloopSayFresh = false;
+volatile uint8_t bloopSaySeq = 0;
+char bloopSayBuf[58] = "";
+char bloopLine[58] = "";                // the line shown in Bloop's bubble on Pip's screen
+unsigned long bloopLineUntil = 0, pipReplyAt = 0;
+uint8_t pipReplyTo = 0, bloopSeqSeen = 0, pipSaySeq = 0;
+
 bool bloopHere = false;                 // the boards are together right now
 volatile uint32_t bloopHeardMs = 0;     // written by the radio, read by loop()
 volatile bool bloopHosting = false;
@@ -896,7 +913,33 @@ void drawBloopGuest() {
   }
   if (!asleep) drawArc(cx, cy + (sad ? 6 : 3), 3, sad ? -2 : 2, 1);   // mouth
   else { printAt("z", cx + r + 1, top + 2, 1); printAt("Z", cx + r + 6, top - 8, 1); }
-  printAt("Bloop", constrain(cx - 15, 1, 169), top - (asleep ? 26 : 18), 1);
+  if (!bloopLine[0]) {
+    printAt("Bloop", constrain(cx - 15, 1, 169), top - (asleep ? 26 : 18), 1);
+    return;
+  }
+  // What Bloop is saying: a bubble across the top of the room (Pip's own bubble sits
+  // lower, just above Pip), with a tail down to Bloop. Long lines wrap onto two rows.
+  const int PER_ROW = 31;
+  char row1[PER_ROW + 1], row2[PER_ROW + 1] = "";
+  int len = strlen(bloopLine), cut = len;
+  if (len > PER_ROW) {
+    cut = PER_ROW;
+    while (cut > 0 && bloopLine[cut] != ' ') cut--;   // break at a space if there is one
+    if (cut == 0) cut = PER_ROW;
+  }
+  snprintf(row1, sizeof(row1), "%.*s", cut, bloopLine);
+  const char *rest = bloopLine + cut;
+  while (*rest == ' ') rest++;
+  snprintf(row2, sizeof(row2), "%s", rest);
+  int rows = row2[0] ? 2 : 1;
+  int w = max((int)strlen(row1), (int)strlen(row2)) * 6 + 10, h = rows * 9 + 4;
+  int x = constrain(cx - w / 2, 1, 199 - w), y = 14;
+  int tx = constrain(cx, x + 6, x + w - 6);
+  display.drawLine(tx, y + h, cx, top - 9, GxEPD_BLACK);
+  display.fillRoundRect(x, y, w, h, 4, GxEPD_WHITE);
+  display.drawRoundRect(x, y, w, h, 4, GxEPD_BLACK);
+  printAt(row1, x + 5, y + 3, 1);
+  if (rows == 2) printAt(row2, x + 5, y + 12, 1);
 }
 
 void drawScreen() {
@@ -1547,6 +1590,18 @@ void petPip() {
 
 void palOnRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
   (void)info;
+  if (len >= 8 && memcmp(data, "PALS", 4) == 0 && data[4] == PAL_BLOOP) {
+    // Bloop said something. (It sends each line twice in case one is lost; loop()
+    // ignores the repeat. Don't overwrite a line loop() hasn't picked up yet.)
+    if (bloopSayFresh) return;
+    int n = len - 7;
+    if (n > 57) n = 57;
+    memcpy(bloopSayBuf, data + 7, n);
+    bloopSayBuf[n] = 0;
+    bloopSaySeq = data[5];
+    bloopSayFresh = true;
+    return;
+  }
   if (len < (int)sizeof(PalMsg) || memcmp(data, "PAL1", 4) != 0 || data[4] != PAL_BLOOP) return;
   bloopFlags = data[6];
   bloopHosting = data[7] != 0;
@@ -1572,9 +1627,49 @@ void palStart() {
   if (palReady) palTicker.attach_ms(250, palBeacon);
 }
 
+// Pip's side of the conversation. Bloop starts chats and sends each thing it says;
+// Pip shows it in Bloop's bubble, thinks for a moment, then answers with a line from
+// its own voice (in whatever mood it's in) and sends that back for Bloop's screen.
+void chatTick() {
+  if (bloopSayFresh) {
+    uint8_t seq = bloopSaySeq;
+    if (bloopHere && seq != bloopSeqSeen) {
+      bloopSeqSeen = seq;
+      int n = 0;
+      for (const char *c = bloopSayBuf; *c && n < 57; c++)   // keep only characters the screen font has
+        bloopLine[n++] = (*c >= 32 && *c < 127) ? *c : '?';
+      bloopLine[n] = 0;
+      bloopLineUntil = millis() + 9000;
+      pipReplyTo = seq;
+      pipReplyAt = millis() + 1200 + esp_random() % 800;
+      needRedraw = true;
+      Serial.printf("Bloop says: \"%s\"\n", bloopLine);
+    }
+    bloopSayFresh = false;
+  }
+  if (bloopLine[0] && (!bloopHere || millis() > bloopLineUntil)) { bloopLine[0] = 0; needRedraw = true; }
+  if (!bloopHere) { pipReplyAt = 0; return; }
+  if (pipReplyAt && millis() >= pipReplyAt) {
+    pipReplyAt = 0;
+    speakSomething();   // writes a new sentence into `speech` and shows it in Pip's bubble
+    speechUntil = millis() + 9000;
+    PalSay m = {};
+    memcpy(m.magic, "PALS", 4);
+    m.who = PAL_PIP;
+    if (++pipSaySeq == 0) pipSaySeq = 1;   // 0 means "no line"
+    m.seq = pipSaySeq;
+    m.replyTo = pipReplyTo;
+    int n = 0;
+    for (const char *c = speech; *c && n < 57; c++)   // plain text only: Bloop passes it on to its website
+      if (*c >= 32 && *c < 127 && *c != '"' && *c != '\\') m.text[n++] = *c;
+    for (int i = 0; i < 2; i++) esp_now_send(PAL_EVERYONE, (const uint8_t *)&m, 7 + n + 1);
+  }
+}
+
 // Run from loop(): notice Bloop arriving and leaving.
 void visitTick() {
   if (!palReady) return;
+  chatTick();
   bool sad = min(min(pip.food, pip.energy), min(pip.fun, min(pip.comfort, pip.social))) < 0.25f;
   palAction = (uint8_t)action;
   palFlags = (sad ? PALF_SAD : 0) | (action == A_NAP ? PALF_ASLEEP : 0);
