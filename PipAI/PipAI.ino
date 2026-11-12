@@ -900,6 +900,12 @@ uint8_t pipReplyTo = 0, bloopSeqSeen = 0, pipSaySeq = 0;
 
 bool bloopHere = false;                 // the boards are together right now
 volatile uint32_t bloopHeardMs = 0;     // written by the radio, read by loop()
+volatile int8_t bloopRssi = -127;        // how loud Bloop's last message was (dBm): louder = closer
+float bloopRssiAvg = -127;               // smoothed
+uint32_t bloopFarSinceMs = 0;            // when Bloop started sounding far away (0 = it doesn't)
+const int BLOOP_FAR_DBM = -62;           // quieter than this = the boards are no longer side by side
+const uint32_t BLOOP_FAR_MS = 3000;      // ...for this long = Pip goes home
+const uint32_t BLOOP_QUIET_MS = 4000;    // no message at all for this long = Pip goes home
 volatile uint8_t bloopPlace = 0;        // 0 = apart, 1 = both pets are in Bloop's room, 2 = both are in Pip's room
 uint8_t placeShown = 0;                 // which of those the screen is showing
 volatile uint8_t bloopFlags = 0;
@@ -1744,6 +1750,7 @@ void palOnRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
   if (len < (int)sizeof(PalMsg) || memcmp(data, "PAL1", 4) != 0 || data[4] != PAL_BLOOP) return;
   bloopFlags = data[6];
   bloopPlace = data[7];
+  if (info && info->rx_ctrl) bloopRssi = info->rx_ctrl->rssi;
   bloopHeardMs = millis();
 }
 
@@ -1859,10 +1866,24 @@ void visitTick() {
 
   uint32_t heard = bloopHeardMs;   // read this before the clock: the radio can update it at any moment
   uint8_t place = bloopPlace;
-  bool together = place != 0 && heard != 0 && millis() - heard < 5000;
+  uint32_t now = millis();
+  bool fresh = heard != 0 && now - heard < BLOOP_QUIET_MS;
+  // Pip checks the distance itself too: if Bloop sounds far away for a few seconds, the boards
+  // have been moved apart, so Pip goes home without waiting for Bloop's board to decide.
+  if (fresh) {
+    bloopRssiAvg = (bloopRssiAvg < -120) ? bloopRssi : bloopRssiAvg + (bloopRssi - bloopRssiAvg) * 0.2f;
+    if (bloopRssiAvg <= BLOOP_FAR_DBM) { if (!bloopFarSinceMs) bloopFarSinceMs = now; }
+    else bloopFarSinceMs = 0;
+  } else {
+    bloopRssiAvg = -127;
+    bloopFarSinceMs = 0;
+  }
+  bool tooFar = bloopFarSinceMs && now - bloopFarSinceMs > BLOOP_FAR_MS;
+  bool together = place != 0 && fresh && !tooFar;
   // The two pets share one room at a time and take turns (Bloop's board decides):
   // in Bloop's room, Pip is away from this screen; in Pip's room, Bloop is drawn here.
   uint8_t show = together ? place : 0;
+  uint8_t wasShown = placeShown;   // 1 = Pip was away in Bloop's room
   if (show != placeShown) {
     placeShown = show;
     if (together == bloopHere) {   // they just moved from one room to the other
@@ -1889,9 +1910,20 @@ void visitTick() {
       if (animMode == AN_REST) startHop();
     }
   } else {
+    if (wasShown == 1 && action != A_NAP) {
+      // Pip comes home from Bloop's room: it walks back in from the edge of its room
+      pipX = 16;
+      facing = 1;
+      targetX = 70;
+      exploreHops = 0;
+      animMode = AN_WALK;
+      nextFrameAt = millis();
+      snprintf(speech, sizeof(speech), "I'm home!");
+      speechUntil = millis() + 6000;
+    }
     snprintf(reason, sizeof(reason), "Bye, Bloop!");
   }
-  Serial.println(bloopHere ? "Bloop is here" : "Bloop went home");
+  Serial.printf("%s (Bloop signal %.0f dBm)\n", bloopHere ? "Bloop is here" : "Pip went home", bloopRssiAvg);
   needRedraw = true;
 }
 
