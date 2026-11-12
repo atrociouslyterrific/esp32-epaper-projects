@@ -883,7 +883,9 @@ struct __attribute__((packed)) PalMsg {
   uint8_t hosting;    // Bloop: 0 = apart, 1 = both pets are in Bloop's room, 2 = both are in Pip's room
 };
 enum : uint8_t { PAL_PIP = 1, PAL_BLOOP = 2 };
-enum : uint8_t { PALF_SAD = 1, PALF_ASLEEP = 2 };
+enum : uint8_t { PALF_SAD = 1, PALF_ASLEEP = 2, PALF_SCARED = 4, PALF_GRUMPY = 8, PALF_HAPPY = 16 };
+// What can happen to Pip in Bloop's room. Must match bloop_room/visitor.h.
+enum : uint8_t { ROOMEV_SHAKE = 1, ROOMEV_BUMP, ROOMEV_TILT, ROOMEV_FLOAT, ROOMEV_DARK, ROOMEV_LIGHT, ROOMEV_PLAY, ROOMEV_CUDDLE };
 
 // A spoken line: Pip and Bloop talk to each other while they're together.
 // Must match the copy in bloop_room/visitor.h.
@@ -914,6 +916,12 @@ volatile uint8_t bloopPlace = 0;        // 0 = apart, 1 = both pets are in Bloop
 uint8_t placeShown = 0;                 // which of those the screen is showing
 volatile uint8_t bloopFlags = 0;
 volatile uint8_t palAction = 0, palFlags = 0;   // what Pip tells Bloop about itself
+// Something happened in Bloop's room while Pip is in it (message "PALE"): written by
+// the radio, picked up by loop(). See roomEventTick().
+volatile bool roomEvFresh = false;
+volatile uint8_t roomEvSeq = 0, roomEvKind = 0, roomEvStrength = 0;
+uint8_t roomEvSeen = 0;
+unsigned long roomSpokeAt = 0;
 uint8_t bloopFlagsDrawn = 0;
 bool palReady = false;
 Ticker palTicker;
@@ -1864,6 +1872,13 @@ void palOnRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
     judgeAskFresh = true;
     return;
   }
+  if (len >= 8 && memcmp(data, "PALE", 4) == 0 && data[4] == PAL_BLOOP) {
+    // Something happened to Pip in Bloop's room (see roomEventTick)
+    if (roomEvFresh) return;
+    roomEvSeq = data[5]; roomEvKind = data[6]; roomEvStrength = data[7];
+    roomEvFresh = true;
+    return;
+  }
   if (len < (int)sizeof(PalMsg) || memcmp(data, "PAL1", 4) != 0 || data[4] != PAL_BLOOP) return;
   bloopFlags = data[6];
   bloopPlace = data[7];
@@ -1929,6 +1944,20 @@ char moodForBloopLine(const char *said) {
   return 0;
 }
 
+// Send what Pip just said (`speech`) to Bloop's board, so it shows over Pip there too.
+void palSendSpeech(uint8_t replyTo) {
+  PalSay m = {};
+  memcpy(m.magic, "PALS", 4);
+  m.who = PAL_PIP;
+  if (++pipSaySeq == 0) pipSaySeq = 1;   // 0 means "no line"
+  m.seq = pipSaySeq;
+  m.replyTo = replyTo;
+  int n = 0;
+  for (const char *c = speech; *c && n < 57; c++)   // plain text only: Bloop passes it on to its website
+    if (*c >= 32 && *c < 127 && *c != '"' && *c != '\\') m.text[n++] = *c;
+  for (int i = 0; i < 2; i++) esp_now_send(PAL_EVERYONE, (const uint8_t *)&m, 7 + n + 1);
+}
+
 // Pip's side of the conversation. Bloop starts chats and sends each thing it says;
 // Pip shows it in Bloop's bubble, thinks for a moment, then answers with a line from
 // its own voice (in whatever mood it's in) and sends that back for Bloop's screen.
@@ -1964,16 +1993,82 @@ void chatTick() {
     else speakSomething();
 #endif
     speechUntil = millis() + 9000;
-    PalSay m = {};
-    memcpy(m.magic, "PALS", 4);
-    m.who = PAL_PIP;
-    if (++pipSaySeq == 0) pipSaySeq = 1;   // 0 means "no line"
-    m.seq = pipSaySeq;
-    m.replyTo = pipReplyTo;
-    int n = 0;
-    for (const char *c = speech; *c && n < 57; c++)   // plain text only: Bloop passes it on to its website
-      if (*c >= 32 && *c < 127 && *c != '"' && *c != '\\') m.text[n++] = *c;
-    for (int i = 0; i < 2; i++) esp_now_send(PAL_EVERYONE, (const uint8_t *)&m, 7 + n + 1);
+    palSendSpeech(pipReplyTo);
+  }
+}
+
+// ---- Pip feels what happens in Bloop's room ----
+// While Pip is in Bloop's room, Bloop's board tells Pip what happens to it there: the
+// room being shaken or tipped, a hard bump, floating in zero-g, the lights going out,
+// playing with Bloop's toy, a cuddle. Each one moves Pip's real feelings (how much
+// depends on its personality: a brave Pip minds a shake far less than a timid one),
+// so Pip's mood, what it says, and how it looks on both screens all follow.
+void roomEventTick() {
+  if (!roomEvFresh) return;
+  uint8_t seq = roomEvSeq, kind = roomEvKind;
+  float k = constrain(roomEvStrength, 0, 100) / 100.0f;
+  roomEvFresh = false;
+  if (seq == roomEvSeen || !bloopHere || placeShown != 1) return;   // repeats; or Pip isn't in Bloop's room
+  roomEvSeen = seq;
+
+  float timid = 1.2f - traits.brave;   // 0.2 (fearless) .. 1.2 (jumpy)
+  char mood = 0;
+  bool wakes = false;
+  switch (kind) {
+    case ROOMEV_SHAKE:
+      pip.scared += 0.35f * timid * k; pip.comfort -= 0.06f * k; wakes = true;
+      snprintf(reason, sizeof(reason), traits.brave > 0.7f ? "A shake? Is that all?" : "The room is shaking!");
+      mood = traits.brave > 0.7f ? 'R' : 'F';
+      break;
+    case ROOMEV_BUMP:
+      pip.grumpy += 0.18f * k; pip.comfort -= 0.10f * k; wakes = true;
+      snprintf(reason, sizeof(reason), "Ouch! That was a hard bump");
+      mood = 'G';
+      break;
+    case ROOMEV_TILT:
+      pip.scared += 0.12f * timid * k;
+      snprintf(reason, sizeof(reason), "Whoa, the floor is tipping!");
+      mood = 'F';
+      break;
+    case ROOMEV_FLOAT:
+      if (traits.brave + traits.playful > 1.0f) {
+        pip.fun += 0.15f; snprintf(reason, sizeof(reason), "I'm floating! Wheee!"); mood = 'Y';
+      } else {
+        pip.scared += 0.15f * timid; snprintf(reason, sizeof(reason), "I'm floating?! Eep!"); mood = 'F';
+      }
+      break;
+    case ROOMEV_DARK:
+      if (traits.brave < 0.4f) pip.scared += 0.10f;
+      pip.comfort += 0.04f * traits.lazy;   // lazy Pips like the dark: nap time
+      snprintf(reason, sizeof(reason), "Who turned out the lights?");
+      mood = 'N';
+      break;
+    case ROOMEV_LIGHT:
+      snprintf(reason, sizeof(reason), "Lights on again!");
+      break;
+    case ROOMEV_PLAY:
+      pip.fun += 0.12f * (0.5f + traits.playful); pip.energy -= 0.01f;
+      snprintf(reason, sizeof(reason), "Bloop's toy is fun!");
+      mood = 'Y';
+      break;
+    case ROOMEV_CUDDLE:
+      pip.social += 0.10f * (0.5f + traits.affectionate); pip.comfort += 0.05f;
+      pip.scared -= 0.05f;                // a friend close by is calming
+      snprintf(reason, sizeof(reason), "Bloop is cosy");
+      mood = 'A';
+      break;
+    default: return;
+  }
+  pip_clamp_needs(&pip);
+  if (wakes && action == A_NAP) { action = A_IDLE; restNow(); }   // nobody sleeps through that
+  needRedraw = true;
+  Serial.printf("In Bloop's room: %s\n", reason);
+
+  // Say something about it (not about every single thing: writing a sentence takes a moment).
+  if (mood && action != A_NAP && millis() - roomSpokeAt > 8000) {
+    roomSpokeAt = millis();
+    speak(mood, 8000);
+    palSendSpeech(0);
   }
 }
 
@@ -1981,9 +2076,13 @@ void chatTick() {
 void visitTick() {
   if (!palReady) return;
   chatTick();
+  roomEventTick();
   bool sad = min(min(pip.food, pip.energy), min(pip.fun, min(pip.comfort, pip.social))) < 0.25f;
   palAction = (uint8_t)action;
-  palFlags = (sad ? PALF_SAD : 0) | (action == A_NAP ? PALF_ASLEEP : 0);
+  palFlags = (sad ? PALF_SAD : 0) | (action == A_NAP ? PALF_ASLEEP : 0) |
+             (pip.scared > 0.35f ? PALF_SCARED : 0) |
+             ((pip.grumpy > 0.35f || pip.frustrated > 0.35f || pip.sulky > 0.35f) ? PALF_GRUMPY : 0) |
+             ((!sad && pip.fun > 0.75f && pip.scared < 0.2f && pip.grumpy < 0.2f) ? PALF_HAPPY : 0);
 
   uint32_t heard = bloopHeardMs;   // read this before the clock: the radio can update it at any moment
   uint8_t place = bloopPlace;
