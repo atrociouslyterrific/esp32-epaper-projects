@@ -39,7 +39,6 @@
 #include <HTTPUpdate.h>
 #include <SD_MMC.h>
 #include <LittleFS.h>   // the board's own file storage (Pip's learning is saved here)
-SET_LOOP_TASK_STACK_SIZE(32 * 1024);  // big brain + voice: give loop() 32 KB of working memory (default 8 KB)
 #include <esp_now.h>   // short-range radio messages to and from Bloop
 #include <esp_wifi.h>
 #include <Ticker.h>
@@ -96,7 +95,10 @@ bool needRedraw = false;
 bool haveSensor = false, haveRtc = false, clockSet = false;
 
 struct Key { int8_t y; uint8_t sq; };
-struct LineSet { const char **lines; int n; };  // a list of fallback phrases  // animation keyframe: height above floor, squash %
+struct LineSet { const char **lines; int n; };  // a list of fallback phrases
+// (This defines a function, so it must come after the types above: Arduino puts its
+// automatic function declarations just before the first function in the file.)
+SET_LOOP_TASK_STACK_SIZE(32 * 1024);  // big brain + voice: give loop() 32 KB of working memory (default 8 KB)
 
 // Declared here, defined further down (used before their sections)
 extern float lastReward;
@@ -1692,7 +1694,7 @@ void judgeTick() {
   lastJudgedSeq = q.seq;
 
   const char *line = nullptr;
-  float sc = (asleep || pip.sulky > 0.4f) ? 0 : pipJudges(q.action, q.bits, q.room, &line);  // asleep or sulking: no opinion
+  float sc = (action == A_NAP || pip.sulky > 0.4f) ? 0 : pipJudges(q.action, q.bits, q.room, &line);  // asleep or sulking: no opinion
   int8_t verdict = sc > 0.25f ? 1 : (sc < -0.25f ? -1 : 0);
   PalVerdict v = {};
   memcpy(v.magic, "PALV", 4);
