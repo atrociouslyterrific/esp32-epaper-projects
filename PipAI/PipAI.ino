@@ -38,6 +38,9 @@
 #include <HTTPClient.h>
 #include <HTTPUpdate.h>
 #include <SD_MMC.h>
+#include <esp_now.h>   // short-range radio messages to and from Bloop
+#include <esp_wifi.h>
+#include <Ticker.h>
 #if __has_include("pip_version.h")
 #include "pip_version.h"     // written by the GitHub build: this program's version number
 #endif
@@ -842,6 +845,60 @@ void finishSnack() {
   speak(pip.food > 0.85f ? 'J' : 'H', 8000);
 }
 
+// ================================================================ Bloop comes to visit
+// Bloop is the pet on the other board (bloop_room in the esp32-s3-touch-lcd-3.5c
+// repo). Pip calls out over the radio a few times a second. When Bloop's board
+// hears Pip loud and clear, the boards are side by side: Pip hops into Bloop's
+// room on Bloop's screen, Bloop answers, and Bloop shows up in Pip's room here.
+
+// The radio message. Must match the copy in bloop_room/visitor.h.
+struct __attribute__((packed)) PalMsg {
+  uint8_t magic[4];   // "PAL1"
+  uint8_t who;        // PAL_PIP or PAL_BLOOP
+  uint8_t action;     // what the sender is doing (its own action number)
+  uint8_t flags;      // PALF_* bits about the sender
+  uint8_t hosting;    // Bloop: 1 while Pip is in Bloop's room
+};
+enum : uint8_t { PAL_PIP = 1, PAL_BLOOP = 2 };
+enum : uint8_t { PALF_SAD = 1, PALF_ASLEEP = 2 };
+
+bool bloopHere = false;                 // the boards are together right now
+volatile uint32_t bloopHeardMs = 0;     // written by the radio, read by loop()
+volatile bool bloopHosting = false;
+volatile uint8_t bloopFlags = 0;
+volatile uint8_t palAction = 0, palFlags = 0;   // what Pip tells Bloop about itself
+uint8_t bloopFlagsDrawn = 0;
+bool palReady = false;
+Ticker palTicker;
+const uint8_t PAL_EVERYONE[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+
+// Bloop in black and white: a dark blob with pointy ears, feet and a pale belly.
+// It stands next to Pip.
+void drawBloopGuest() {
+  const int r = 15;
+  int cx = constrain(pipX > 100 ? pipX - 46 : pipX + 46, 22, 178);
+  int cy = FLOOR_Y - 3 - r, top = cy - r;
+  int look = pipX > cx ? 2 : -2;
+  bool asleep = bloopFlags & PALF_ASLEEP, sad = bloopFlags & PALF_SAD;
+
+  display.fillCircle(cx - 7, FLOOR_Y - 4, 4, GxEPD_BLACK);   // feet
+  display.fillCircle(cx + 7, FLOOR_Y - 4, 4, GxEPD_BLACK);
+  int tip = sad ? top + 4 : top - 6, out = sad ? 19 : 12;    // ears droop when it's sad
+  display.fillTriangle(cx - 12, cy - 6, cx - 3, top + 2, cx - out, tip, GxEPD_BLACK);
+  display.fillTriangle(cx + 12, cy - 6, cx + 3, top + 2, cx + out, tip, GxEPD_BLACK);
+  display.fillCircle(cx, cy, r, GxEPD_BLACK);                // body
+  display.fillCircle(cx, cy + 6, 7, GxEPD_WHITE);            // belly
+  for (int s = -1; s <= 1; s += 2) {                         // eyes
+    int ex = cx + s * 6;
+    if (asleep) { display.drawLine(ex - 3, cy - 4, ex + 3, cy - 4, GxEPD_WHITE); continue; }
+    display.fillCircle(ex, cy - 4, 4, GxEPD_WHITE);
+    display.fillCircle(ex + look, cy - 4, 2, GxEPD_BLACK);
+  }
+  if (!asleep) drawArc(cx, cy + (sad ? 6 : 3), 3, sad ? -2 : 2, 1);   // mouth
+  else { printAt("z", cx + r + 1, top + 2, 1); printAt("Z", cx + r + 6, top - 8, 1); }
+  printAt("Bloop", constrain(cx - 15, 1, 169), top - (asleep ? 26 : 18), 1);
+}
+
 void drawScreen() {
   redrawCount++;
   bool full = redrawCount == 1 || (fullRefreshDue && animMode == AN_REST);
@@ -871,6 +928,7 @@ void drawScreen() {
     display.drawLine(0, 12, 199, 12, GxEPD_BLACK);
     drawRoom();
     drawSnack();
+    if (bloopHere) drawBloopGuest();
     drawPip(action, sad);
     drawSpeech();
     printCentered(label, 111, 2);
@@ -1268,6 +1326,7 @@ void sendState() {
   j += "\"recentReward\":" + String(recentReward, 3) + ",\"snacks\":" + String(snackCount) + ",";
   j += "\"updateStatus\":\"" + jsonEscape(updateStatus.c_str()) + "\",\"latest\":" + String(latestVersion) + ",";
   j += "\"sd\":" + String(sdOk ? "true" : "false") + ",";
+  j += "\"bloopHere\":" + String(bloopHere ? "true" : "false") + ",";
   j += "\"log\":[";
   for (int i = 0; i < logCount; i++) {
     char e[48];
@@ -1483,6 +1542,70 @@ void petPip() {
   needRedraw = true;
 }
 
+// ================================================================ radio: Pip and Bloop
+// (See "Bloop comes to visit" above.)
+
+void palOnRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
+  (void)info;
+  if (len < (int)sizeof(PalMsg) || memcmp(data, "PAL1", 4) != 0 || data[4] != PAL_BLOOP) return;
+  bloopFlags = data[6];
+  bloopHosting = data[7] != 0;
+  bloopHeardMs = millis();
+}
+
+// "I'm Pip, I'm here": sent 4 times a second by a timer, so it keeps going even
+// while the screen is busy drawing.
+void palBeacon() {
+  PalMsg m = {{'P', 'A', 'L', '1'}, PAL_PIP, palAction, palFlags, 0};
+  esp_now_send(PAL_EVERYONE, (const uint8_t *)&m, sizeof(m));
+}
+
+void palStart() {
+  if (esp_now_init() != ESP_OK) { Serial.println("Radio to Bloop: couldn't start"); return; }
+  esp_now_register_recv_cb(palOnRecv);
+  esp_now_peer_info_t peer = {};
+  memcpy(peer.peer_addr, PAL_EVERYONE, 6);
+  peer.channel = 0;   // whatever channel the Wi-Fi is on
+  peer.ifidx = WIFI_IF_STA;
+  peer.encrypt = false;
+  palReady = esp_now_add_peer(&peer) == ESP_OK;
+  if (palReady) palTicker.attach_ms(250, palBeacon);
+}
+
+// Run from loop(): notice Bloop arriving and leaving.
+void visitTick() {
+  if (!palReady) return;
+  bool sad = min(min(pip.food, pip.energy), min(pip.fun, min(pip.comfort, pip.social))) < 0.25f;
+  palAction = (uint8_t)action;
+  palFlags = (sad ? PALF_SAD : 0) | (action == A_NAP ? PALF_ASLEEP : 0);
+
+  uint32_t heard = bloopHeardMs;   // read this before the clock: the radio can update it at any moment
+  bool together = bloopHosting && heard != 0 && millis() - heard < 5000;
+  if (together == bloopHere) {
+    if (bloopHere && bloopFlags != bloopFlagsDrawn) { bloopFlagsDrawn = bloopFlags; needRedraw = true; }
+    return;
+  }
+  bloopHere = together;
+  bloopFlagsDrawn = bloopFlags;
+  // Normally the Wi-Fi radio naps between messages to save battery, which makes it
+  // miss most of what Bloop says. While they're together, keep it wide awake.
+  if (!setupMode) WiFi.setSleep(!bloopHere);
+  if (bloopHere) {
+    pip.social = pip_clamp01(pip.social + 0.2f);   // a friend came over!
+    pip.fun = pip_clamp01(pip.fun + 0.15f);
+    snprintf(reason, sizeof(reason), "Bloop came over!");
+    if (action != A_NAP) {
+      snprintf(speech, sizeof(speech), "Hi Bloop!");
+      speechUntil = millis() + 8000;
+      if (animMode == AN_REST) startHop();
+    }
+  } else {
+    snprintf(reason, sizeof(reason), "Bye, Bloop!");
+  }
+  Serial.println(bloopHere ? "Bloop is here" : "Bloop went home");
+  needRedraw = true;
+}
+
 // ================================================================ main
 
 void setup() {
@@ -1514,6 +1637,7 @@ void setup() {
   actionProbs[action] = 1;
   drawScreen();
   startWifi();
+  palStart();
   lastThink = millis() - THINK_EVERY_MS + 10000;  // first thought 10 s after start
 }
 
@@ -1527,6 +1651,7 @@ void loop() {
   }
   animTick();
   speechTick();
+  visitTick();
   updateTick();
   if (needRedraw) {
     needRedraw = false;
