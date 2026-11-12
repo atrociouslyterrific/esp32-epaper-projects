@@ -55,6 +55,27 @@ jobs:
             && echo "Using the motion model from the checkpoints release" \
             || echo "No motion model yet - Pip uses its hand-made moves"
 
+      # The trained models are written with each table of numbers on ONE line. With 512
+      # neurons those lines are millions of characters long, and Arduino's tool that reads
+      # the program gives up ("line too long"), which breaks the whole build. Break them up.
+      - name: Wrap the very long lines in the models
+        if: matrix.sketch == 'PipAI'
+        run: |
+          python3 - <<'PY'
+          import glob, re
+          for path in sorted(glob.glob("PipAI/pip_*.h")):
+              out, wrapped = [], 0
+              for line in open(path):
+                  if len(line) > 2000 and line.startswith("static const") and '"' not in line:
+                      line = re.sub(r"((?:[^,]*,){24})", r"\1\n", line)   # 24 numbers per line
+                      wrapped += 1
+                  out.append(line)
+              if wrapped:
+                  open(path, "w").writelines(out)
+              longest = max((len(l) for l in "".join(out).splitlines()), default=0)
+              print(f"{path}: wrapped {wrapped} tables, longest line now {longest} characters")
+          PY
+
       - name: Check the sketch is ready
         id: ready
         run: |
