@@ -136,22 +136,119 @@ def fill(template, rng):
     return out
 
 
-def make_lines(n, seed=1):
+# ---------------------------------------------------------------- conversations
+# Pip replies to someone: Bloop (source "O" = the Other pet) or you (source "E" = Everyone /
+# the human). Its reply depends on what was said AND on Pip's mood. Self-talk is source "I".
+# Training line format:  <source><mood><what they said>|<Pip's reply>
+SOURCES = {"I": "nobody (Pip talks to itself)", "O": "Bloop", "E": "you"}
+
+MOOD_GROUP = {}
+for _g, _ms in {"happy": "JYPDMAR", "tired": "TSZN", "hungry": "H", "lonely": "LU", "bored": "B",
+                "grumpy": "GQ", "scared": "FX", "curious": "CV", "cold": "K", "hot": "W"}.items():
+    for _m in _ms:
+        MOOD_GROUP[_m] = _g
+
+HEARD = {  # what someone might say: (from you, from Bloop)
+    "greet": (["hi pip", "hello pip!", "hey buddy", "hi there", "hey pip", "good morning pip", "yo pip"],
+              ["hi pip!", "pip! you're here!", "hello pip", "hey pip!", "yay, pip!"]),
+    "how": (["how are you?", "are you ok?", "how do you feel?", "what's up, pip?", "you ok, pip?"],
+            ["how are you, pip?", "are you ok?", "you look {feel}!"]),
+    "play": (["want to play?", "let's play!", "wanna race?", "catch the ball!", "play with me?"],
+             ["chase me!", "let's dance!", "want to play?", "catch!", "race you!", "tag! you're it!"]),
+    "food": (["are you hungry?", "want a snack?", "here's a {food}", "time to eat!", "want some {food}?"],
+             ["i found {food}!", "want some {food}?", "bloop is hungry", "snack time?"]),
+    "praise": (["good pip!", "you're so cute", "i love you", "best blob ever", "good job!", "you're the best"],
+               ["you're my best friend", "i like you, pip", "you're so cool!"]),
+    "tease": (["you're a silly blob", "i'm faster than you", "you can't catch me", "you're slow"],
+              ["i'm bouncier than you!", "you can't catch me!", "silly pip!"]),
+    "sleep": (["time for bed", "go to sleep", "are you tired?", "good night pip", "nap time?"],
+              ["i'm sleepy", "let's nap", "good night pip"]),
+    "doing": (["what are you doing?", "what's that?", "where are you going?", "what's new?"],
+              ["what are you doing?", "do you like my room?", "look at my bed!"]),
+    "name": (["what's your name?", "who are you?", "are you a blob?"], ["who are you?", "are you a blob too?"]),
+    "bye": (["bye pip", "see you later", "i have to go", "bye bye"], ["bye pip!", "come back soon!", "see you!"]),
+    "sorry": (["sorry pip", "i didn't mean it", "are you mad?"], ["sorry pip", "are you mad at me?"]),
+    "scold": (["no pip!", "bad pip", "stop that", "don't do that"], ["stop it, pip!", "no fair!"]),
+    "tilt": ([], ["the room is tipping!", "whoa, hold on!", "we're falling!", "everything's floating!"]),
+}
+
+# Pip's replies, by what was said and Pip's mood group ("*" = any mood)
+REPLY = {
+    "greet": {"*": ["hi {who}{end}", "hello {who}{end}", "{excl}, hi{end}"], "happy": ["hi {who}! i'm so {feel}{end}", "yay, {who}{end}"],
+              "tired": ["*yawn* hi...", "hi... so sleepy..."], "grumpy": ["hmph. hi.", "what do you want?"],
+              "lonely": ["you came back{end}", "finally! i missed you"], "scared": ["oh... hi", "eep! oh, it's you"],
+              "hungry": ["hi! got any {food}?"]},
+    "how": {"happy": ["i'm {feel}{end}", "great! life is good", "super {feel} today"], "tired": ["so sleepy...", "tired. need a nap"],
+            "hungry": ["hungry! got {food}?", "my tummy grumbles"], "lonely": ["lonely... stay with me?", "better now you're here"],
+            "bored": ["sooo bored", "bored. let's play?"], "grumpy": ["grumpy. don't ask.", "hmph."],
+            "scared": ["a bit scared...", "not great..."], "curious": ["curious! what's that?", "i'm wondering about {thing}"],
+            "cold": ["cold! brr", "chilly. need a blanket"], "hot": ["too hot!", "melting..."]},
+    "play": {"happy": ["yes! race you{end}", "let's go{end}", "yay, play time{end}", "you're on{end}"],
+             "tired": ["too sleepy... later?", "maybe after a nap"], "hungry": ["snack first, then play?"],
+             "lonely": ["yes! don't leave{end}"], "bored": ["finally! let's go{end}", "yes yes yes{end}"],
+             "grumpy": ["hmph. no.", "not now."], "scared": ["um... ok... gently?"], "curious": ["ooh, how do we play?"],
+             "cold": ["yes, to warm up{end}"], "hot": ["too hot to run..."]},
+    "food": {"*": ["yes please{end}", "yum{end}", "{food}? yes{end}"], "hungry": ["yes! i'm starving{end}", "gimme gimme{end}", "{food}! my favourite{end}"],
+             "tired": ["mm... after my nap"], "grumpy": ["...fine. thanks."], "happy": ["yay, {food}{end}", "you're the best{end}"]},
+    "praise": {"*": ["aww, thanks{end}", "hehe{end}", "you're the best too{end}"], "happy": ["i love you too{end}", "*happy wiggle*"],
+               "grumpy": ["...hmph. thanks.", "flattery won't work"], "lonely": ["really? stay with me?"],
+               "scared": ["...thanks", "*hides but smiles*"]},
+    "tease": {"*": ["no way{end}", "am not{end}", "hmph{end}"], "happy": ["bet i'm faster{end}", "catch me then{end}"],
+              "grumpy": ["say that again...", "grr."], "tired": ["too sleepy to argue"], "scared": ["that's mean..."]},
+    "sleep": {"*": ["ok, night night{end}", "good night{end}"], "tired": ["yes... so sleepy...", "finally. zzz..."],
+              "happy": ["but i'm not tired{end}", "five more minutes{end}"], "scared": ["leave a light on?"],
+              "bored": ["boring... ok."]},
+    "doing": {"*": ["just being a blob{end}", "hanging out{end}"], "curious": ["looking at {thing}{end}", "exploring{end}"],
+              "hungry": ["looking for {food}"], "tired": ["trying to nap..."], "happy": ["dancing{end}", "having fun{end}"],
+              "bored": ["nothing. so bored."], "grumpy": ["none of your business"]},
+    "name": {"*": ["i'm pip{end}", "pip! a blob{end}", "i'm pip, a happy blob"], "grumpy": ["pip. obviously."],
+             "scared": ["...i'm pip"]},
+    "bye": {"*": ["bye{end}", "see you{end}", "come back soon{end}"], "lonely": ["don't go...", "come back soon?"],
+            "grumpy": ["bye. hmph."], "happy": ["bye bye{end}", "see you later{end}"]},
+    "sorry": {"*": ["it's ok{end}", "i forgive you{end}"], "grumpy": ["...fine.", "hmph. ok."], "lonely": ["just stay, ok?"]},
+    "scold": {"*": ["sorry{end}", "oops{end}", "ok, ok{end}"], "grumpy": ["hmph.", "you're not my boss"],
+              "scared": ["sorry! sorry!", "*hides*"], "happy": ["oops, hehe"]},
+    "tilt": {"*": ["hold on{end}", "whoa{end}", "eek{end}"], "scared": ["help{end}", "*clings*"], "happy": ["wheee{end}", "this is fun{end}"]},
+}
+
+
+def reply_line(intent, mood, rng):
+    group = MOOD_GROUP.get(mood, "happy")
+    options = REPLY[intent].get(group) or REPLY[intent].get("*") or REPLY[intent]["happy"]
+    if "*" in REPLY[intent] and rng.random() < 0.3:
+        options = REPLY[intent]["*"]
+    return rng.choice(options)
+
+
+def make_lines(n, seed=1, talk_share=0.55):
+    """Training lines: about 55% conversations (with Bloop or you), 45% self-talk."""
     rng = random.Random(seed)
     lines = []
     moods = list(TEMPLATES)
+    intents = list(HEARD)
     while len(lines) < n:
         mood = rng.choice(moods)
-        text = fill(rng.choice(TEMPLATES[mood]), rng)
-        if rng.random() < 0.15 and mood not in "SX":  # sometimes start with a little exclamation
-            text = fill("{excl}, ", rng) + text
-        if 2 <= len(text) <= MAX_LEN and all(c in ALPHABET for c in text):
-            lines.append(f"{mood}>{text}")
+        if rng.random() < talk_share:
+            src = rng.choice("OE")
+            intent = rng.choice(intents)
+            heard_opts = HEARD[intent][1 if src == "O" else 0]
+            if not heard_opts:
+                continue
+            heard = fill(rng.choice(heard_opts), rng)
+            text = fill(reply_line(intent, mood, rng).replace("{who}", "bloop" if src == "O" else "{you}"), rng)
+        else:
+            src, heard = "I", ""
+            text = fill(rng.choice(TEMPLATES[mood]), rng)
+            if rng.random() < 0.15 and mood not in "SX":  # sometimes start with a little exclamation
+                text = fill("{excl}, ", rng) + text
+        if (2 <= len(text) <= MAX_LEN and len(heard) <= MAX_LEN
+                and all(c in ALPHABET for c in text) and all(c in ALPHABET for c in heard)):
+            lines.append(f"{src}{mood}{heard}|{text}")
     return lines
 
 
 if __name__ == "__main__":
-    lines = make_lines(40000)
+    lines = make_lines(60000)
     print(len(set(lines)), "different sentences, e.g.:")
     for line in random.Random(2).sample(lines, 30):
         print(" ", line)

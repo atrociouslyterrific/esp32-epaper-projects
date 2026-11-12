@@ -126,6 +126,7 @@ h3 { font: 600 14px var(--f-body); margin: 16px 0 8px; }
 .mood li::before { content: "“"; color: var(--muted); } .mood li::after { content: "”"; color: var(--muted); }
 .trytalk { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
 .trytalk select, .trytalk input[type=range] { font: 14px var(--f-body); }
+#vheard { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--ink); font: 14px var(--f-body); min-width: 0; flex: 1 1 180px; }
 .trytalk select { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--ink); }
 .go { font: 600 14px var(--f-body); padding: 8px 14px; border-radius: 8px; border: 1px solid var(--accent); background: var(--accent); color: var(--card); cursor: pointer; }
 .go:disabled { opacity: .5; cursor: default; }
@@ -144,6 +145,9 @@ h3 { font: 600 14px var(--f-body); margin: 16px 0 8px; }
 .vcard .muted { font-size: 12px; overflow-wrap: anywhere; }
 .totals { margin-top: 12px; }
 @media (max-width: 620px) { .vgrid { grid-template-columns: 1fr; } }
+.chats { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 8px; }
+.chat { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font: 13px var(--f-mono); display: grid; gap: 3px; min-width: 0; }
+.chat .them { color: var(--muted); } .chat .pip { color: var(--ink); } .chat small { color: var(--muted); font: 11px var(--f-body); }
 .pos { color: var(--accent); font-weight: 600; } .neg { color: var(--neg); font-weight: 600; }
 .act-big { font: 400 26px/1.1 var(--f-display); text-transform: lowercase; }
 .gallery { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; margin-top: 14px; }
@@ -225,6 +229,8 @@ h3 { font: 600 14px var(--f-body); margin: 16px 0 8px; }
     </div>
     <h3>What it's writing right now</h3>
     <div class="talk" id="lm-now"><span class="muted">Sentences appear every 100 training steps.</span></div>
+    <h3>Conversations</h3>
+    <div id="lm-chats" class="chats"><span class="muted">Pip's replies to you and to Bloop appear here as it trains.</span></div>
   </section>
 
   <section aria-labelledby="live-h">
@@ -314,6 +320,9 @@ h3 { font: 600 14px var(--f-body); margin: 16px 0 8px; }
     <div class="trytalk">
       <label for="vmood">Mood</label>
       <select id="vmood"></select>
+      <label for="vwho">Who's talking</label>
+      <select id="vwho"><option value="I">nobody (Pip talks to itself)</option><option value="E">you</option><option value="O">Bloop</option></select>
+      <input id="vheard" maxlength="28" placeholder="say something to Pip..." autocomplete="off" disabled>
       <label for="vtemp">Wildness <span id="vtemp-val" class="mono">0.75</span></label>
       <input id="vtemp" type="range" min="0" max="1.5" step="0.05" value="0.75">
       <button type="button" id="vgo" class="go" disabled>Write a sentence</button>
@@ -502,6 +511,16 @@ function renderLanguagePanel() {
   $("lm-eta").textContent = active && v.step ? fmtDur(v.elapsed_s / v.step * (v.total - v.step)) : done ? fmtDur(0) : "–";
   $("lm-loss").textContent = v.loss?.length ? `${v.loss.at(-1)}${v.loss.length > 1 ? (v.loss.at(-1) < v.loss.at(-2) ? " ↓" : " ↑") : ""}` : "–";
   $("lm-ver").textContent = v.version != null ? "v" + v.version : (s?.mode === "continue" ? "continuing" : s?.mode === "scratch" ? "new" : "–");
+  const chats = v.chats;
+  if (chats?.length) {
+    $("lm-chats").innerHTML = chats.map(() => `<div class="chat"><small></small><span class="them"></span><span class="pip"></span></div>`).join("");
+    $("lm-chats").querySelectorAll(".chat").forEach((el, i) => {
+      const c = chats[i];
+      el.querySelector("small").textContent = `${c.who} → Pip (Pip feels ${c.mood})`;
+      el.querySelector(".them").textContent = `${c.who === "you" ? "You" : "Bloop"}: ${c.heard}`;
+      el.querySelector(".pip").textContent = `Pip: ${c.reply || "(nothing)"}`;
+    });
+  }
   const samp = v.samples;
   if (!samp) return;
   const pick = ["P", "H", "J", "C", "S", "A"].filter(m => samp[m]?.length);
@@ -1142,8 +1161,17 @@ async function writeSentence() {
   if (!voice || voiceBusy) return;
   voiceBusy = true; $("vgo").disabled = true;
   const mood = $("vmood").value, temp = +$("vtemp").value, said = $("vsaid"), cands = $("vcands");
-  let h = new Float32Array(voice.H); h = vStep(h, voice.vocab.indexOf(mood)); h = vStep(h, voice.vocab.indexOf(">"));
-  let text = "", lastTok = voice.vocab.indexOf(">");
+  // What the voice reads first. Newer voices: who's talking + mood + what they said + "|".
+  // Older voices: mood + ">".
+  let prompt = [mood, ">"];
+  if (voice.vocab.includes("|")) {
+    const src = $("vwho").value, alpha = "abcdefghijklmnopqrstuvwxyz !?.,'~*<3";
+    const heard = src === "I" ? "" : [...$("vheard").value.toLowerCase()].filter(c => alpha.includes(c)).join("").slice(0, 28);
+    prompt = [src, mood, ...heard, "|"];
+  }
+  let h = new Float32Array(voice.H), lastTok = -1;
+  for (const c of prompt) { const t = voice.vocab.indexOf(c); if (t >= 0) { h = vStep(h, t); lastTok = t; } }
+  let text = "";
   for (let n = 0; n < 31; n++) {
     const lg = vLogits(h);
     const mx = Math.max(...lg), p = Array.from(lg, l => Math.exp((l - mx) / Math.max(temp, 1e-3)));
@@ -1166,7 +1194,7 @@ async function writeSentence() {
 // ---- the voice network diagram (static weights + live activity)
 const VN = { W: 820, H: 540, T: 16, B: 24, xIn: 220, xMem: 430, xOut: 640 };
 let vnetFor = null;
-const vLabel = c => c === "\n" ? "end" : c === " " ? "␣" : c === ">" ? ">" : /[A-Z]/.test(c) ? `mood ${c}` : c;
+const vLabel = c => c === "\n" ? "end" : c === " " ? "␣" : c === ">" || c === "|" ? c : c === "I" ? "self" : c === "O" ? "Bloop" : c === "E" ? "you" : /[A-Z]/.test(c) ? `mood ${c}` : c;
 const vY = (i, n) => VN.T + (i + .5) * (VN.H - VN.T - VN.B) / n;
 
 function buildVoiceNet() {
@@ -1246,13 +1274,16 @@ function renderVoiceWeights() {
   [-absMax, 0, absMax].forEach(v => svg += `<text x="${L + (v + absMax) / (2 * absMax) * (Wd - L - 8)}" y="${Ht - 8}" text-anchor="middle">${v.toFixed(1)}</text>`);
   $("v-hist").innerHTML = svg;
   if (!$("vmood").options.length) {
-    $("vmood").innerHTML = vocab.filter(c => /[A-Z]/.test(c)).map(c => `<option value="${c}">${MOOD_NAMES[c] || c}</option>`).join("");
+    $("vmood").innerHTML = vocab.filter(c => /[A-Z]/.test(c) && !"IOE".includes(c)).map(c => `<option value="${c}">${MOOD_NAMES[c] || c}</option>`).join("");
+    $("vwho").disabled = !vocab.includes("|");   // older voices can't read what someone said
     $("vmood").value = "J";
   }
   $("vgo").disabled = voiceBusy;
   buildVoiceNet();
 }
 $("vgo").addEventListener("click", writeSentence);
+$("vwho").addEventListener("change", () => { $("vheard").disabled = $("vwho").value === "I"; if (!$("vheard").disabled) $("vheard").focus(); });
+$("vheard").addEventListener("keydown", e => { if (e.key === "Enter") writeSentence(); });
 $("vtemp").addEventListener("input", e => $("vtemp-val").textContent = (+e.target.value).toFixed(2));
 ["v-ih", "v-o", "v-hr", "v-hz", "v-hn"].forEach(id => attachTip($(id)));
 

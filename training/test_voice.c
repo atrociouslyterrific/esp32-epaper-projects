@@ -11,20 +11,23 @@ int main(int argc, char **argv) {
   const char *path = argc > 1 ? argv[1] : "training/out/voice_test.txt";
   FILE *f = fopen(path, "r");
   if (!f) { printf("cannot open %s\n", path); return 1; }
-  char line[128];
+  char line[160];
   int total = 0, same = 0;
   while (fgets(line, sizeof(line), f)) {
-    char mood = line[0];
-    char *want = line + 2;
+    // each line: <prompt> TAB <reply Python wrote>
+    char *tab = strchr(line, '\t');
+    if (!tab) continue;
+    *tab = 0;
+    char *prompt = line, *want = tab + 1;
     want[strcspn(want, "\r\n")] = 0;
     char got[64];
-    pv_generate(mood, got, 30, 0, no_rand);  // same limit as Python's generate()
+    pv_generate_prompt(prompt, got, 30, 0, no_rand);  // same limit as Python's generate()
     total++;
     if (strcmp(got, want) == 0) same++;
-    printf("%c  python: %-24s  c: %s\n", mood, want, got);
+    printf("%-34s python: %-28s c: %s\n", prompt, want, got);
   }
-  printf("%d of %d moods match\n", same, total);
-  int ok = total > 0 && same >= total - 1;  // allow one float rounding difference
+  printf("%d of %d prompts match\n", same, total);
+  int ok = total > 0 && same >= total - 2;  // allow a couple of float rounding differences
   printf(ok ? "PASS: C voice matches Python\n" : "FAIL: C voice differs from Python\n");
   return ok ? 0 : 1;
 }

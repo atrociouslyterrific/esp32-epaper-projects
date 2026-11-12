@@ -1196,7 +1196,12 @@ LineSet fallbackFor(char mood) {
 float voiceRand01() { return esp_random() / 4294967296.0f; }
 
 // Pip writes a brand-new sentence for this mood with its voice model, one letter at a time.
-void speak(char mood, unsigned long ms) {
+void speak(char mood, unsigned long ms) { speakTo(0, mood, "", ms); }
+
+// Pip says something. src 0 = to itself; 'O' = replying to Bloop; 'E' = replying to you,
+// with `heard` = what they said. The voice model reads who's talking, Pip's mood and their
+// words, then writes Pip's reply letter by letter.
+void speakTo(char src, char mood, const char *heard, unsigned long ms) {
   // Whatever the model writes is shown, as long as it's a proper sentence:
   // not empty, finished before running off the bubble, and only normal characters
   // (lowercase letters, spaces and ! ? . , ' ~ * < 3), not mood codes.
@@ -1204,7 +1209,12 @@ void speak(char mood, unsigned long ms) {
   char text[MAX_CHARS + 2];
   bool ok = false;
   for (int attempt = 0; attempt < 5 && !ok; attempt++) {
-    int n = pv_generate(mood, text, MAX_CHARS + 1, 0.75f, voiceRand01);
+#ifdef PV_HAS_DIALOGUE
+    int n = src ? pv_reply(src, mood, heard, text, MAX_CHARS + 1, 0.75f, voiceRand01)
+                : pv_generate(mood, text, MAX_CHARS + 1, 0.75f, voiceRand01);
+#else
+    int n = pv_generate(mood, text, MAX_CHARS + 1, 0.75f, voiceRand01);  // older voice: can't read replies
+#endif
     ok = n >= 1 && n <= MAX_CHARS;
     for (int i = 0; ok && i < n; i++) ok = strchr("abcdefghijklmnopqrstuvwxyz !?.,'~*<3", text[i]) != nullptr;
   }
@@ -1218,7 +1228,35 @@ void speak(char mood, unsigned long ms) {
   diarySaid(speech);
   speechUntil = millis() + ms;
   needRedraw = true;
-  Serial.printf("Pip says (%c%s): \"%s\"\n", mood, ok ? "" : ", fallback", speech);
+  Serial.printf("Pip says (%c%s%s%s): \"%s\"\n", mood, ok ? "" : ", fallback", src ? ", replying to: " : "", src ? heard : "", speech);
+}
+
+// Pip's mood right now, as one of the voice's mood letters.
+char pickMood() {
+  char moods[12];
+  int n = 0;
+  bool night = clockSet && (senses.hour >= 22 || senses.hour < 6);
+  bool morning = clockSet && senses.hour >= 6 && senses.hour < 10;
+  const char FEEL_MOOD[4] = {'G', 'U', 'F', 'Q'};
+  int feel = strongestFeeling(0.35f);
+  if (feel >= 0) return FEEL_MOOD[feel];
+  if (action == A_NAP) return 'S';
+  if (pip.food < 0.3f) moods[n++] = 'H';
+  if (pip.energy < 0.3f) moods[n++] = 'T';
+  if (pip.social < 0.3f) moods[n++] = 'L';
+  if (pip.fun < 0.3f) moods[n++] = 'B';
+  if (haveSensor && senses.tempC < 18) moods[n++] = 'K';
+  if (haveSensor && senses.tempC > 27) moods[n++] = 'W';
+  if (n) return moods[esp_random() % n];
+  if (action == A_DANCE) return 'D';
+  if (night) return 'N';
+  if (morning) return 'M';
+  if (traits.curious > 0.6f) moods[n++] = 'C';
+  if (traits.playful > 0.6f) moods[n++] = 'Y';
+  if (traits.lazy > 0.6f) moods[n++] = 'Z';
+  if (traits.affectionate > 0.6f) moods[n++] = 'A';
+  moods[n++] = 'J';
+  return moods[esp_random() % n];
 }
 
 void speakSomething() {
@@ -1296,7 +1334,9 @@ h1{margin:0;font-size:26px}.sub{color:#666;margin-bottom:12px}
 .t .fill{background:#8a6d3b}h2{font-size:16px;margin:0 0 8px}
 button{width:100%;font-size:20px;padding:14px;border:2px solid #222;border-radius:12px;background:#fff}
 .btns{display:grid;grid-template-columns:1fr 1fr;gap:10px}button.small{font-size:16px;padding:10px}
-#brain{line-height:1.6}#files a{color:#222;margin-right:14px}
+#brain{line-height:1.6}
+.chatrow{display:flex;gap:8px}.chatrow input{flex:1;font-size:18px;padding:10px;border:2px solid #222;border-radius:10px}
+.chatrow button{width:auto}#chatlog p{margin:6px 0}#chatlog .you{text-align:right;color:#555}#files a{color:#222;margin-right:14px}
 ul{margin:0;padding-left:18px}small{color:#666}
 </style></head><body>
 <h1 id="name">Pip</h1><div class="sub" id="pers"></div>
@@ -1307,6 +1347,9 @@ ul{margin:0;padding-left:18px}small{color:#666}
 <div class="card t"><h2>Personality</h2><div id="traits"></div></div>
 <div class="card"><h2>Recently</h2><ul id="log"></ul></div>
 <div class="btns"><button onclick="pet()">Pet Pip</button><button onclick="snack()">Give a snack</button></div>
+<div class="card"><h2>Talk to Pip</h2><div id="chatlog"></div>
+<form id="chatform" class="chatrow"><input id="chatin" maxlength="28" placeholder="say something..." autocomplete="off">
+<button class="small" type="submit">Send</button></form></div>
 <div class="card"><h2>Pip's brain</h2><div id="brain"></div>
 <p><button class="small" onclick="upd()">Check for updates</button></p>
 <p id="files"></p></div>
@@ -1333,6 +1376,9 @@ function show(s){
 function load(){fetch('/state').then(r=>r.json()).then(show).catch(()=>{})}
 function pet(){fetch('/pet').then(r=>r.json()).then(show)}
 function snack(){fetch('/snack').then(r=>r.json()).then(show)}
+function addChat(cls,who,text){const p=document.createElement('p');p.className=cls;p.textContent=who+': '+text;$('chatlog').append(p);while($('chatlog').children.length>12)$('chatlog').firstChild.remove();}
+$('chatform').addEventListener('submit',e=>{e.preventDefault();const m=$('chatin').value.trim();if(!m)return;$('chatin').value='';addChat('you','You',m);
+ fetch('/chat?m='+encodeURIComponent(m)).then(r=>r.json()).then(s=>{addChat('pip','Pip',s.reply||'...');show(s.state)});});
 function upd(){$('brain').insertAdjacentText('beforeend',' · checking…');fetch('/update').then(r=>r.json()).then(show)}
 // Give Pip the time from this phone (it has a clock chip but no internet time)
 const d=new Date();
@@ -1374,7 +1420,7 @@ String htmlEscape(const String &s) {
   return out;
 }
 
-void sendState() {
+String stateJson() {
   int hr = (int)senses.hour, mn = (int)((senses.hour - hr) * 60);
   char clock[8];
   if (clockSet) snprintf(clock, sizeof(clock), "%02d:%02d", hr, mn); else snprintf(clock, sizeof(clock), "unset");
@@ -1410,14 +1456,33 @@ void sendState() {
     j += String(i ? "," : "") + "\"" + e + "\"";
   }
   j += "]}";
-  server.send(200, "application/json", j);
+  return j;
 }
+
+void sendState() { server.send(200, "application/json", stateJson()); }
 
 void sendSdFile(const char *path, const char *type) {
   if (!sdOk || !SD_MMC.exists(path)) { server.send(404, "text/plain", "Nothing on the microSD card yet."); return; }
   File f = SD_MMC.open(path, FILE_READ);
   server.streamFile(f, type);
   f.close();
+}
+
+// You typed something on the phone page: Pip reads it and replies.
+void handleChat() {
+  String m = server.arg("m");
+  m.trim();
+  if (m.length() > 28) m = m.substring(0, 28);
+  char heard[32];
+  snprintf(heard, sizeof(heard), "%s", m.c_str());
+  touchedPending = true;   // being talked to counts as attention
+  char said[64];
+  snprintf(said, sizeof(said), "You: %s", heard);
+  diarySaid(said);
+  speakTo('E', pickMood(), heard, 15000);
+  snprintf(reason, sizeof(reason), "Chatting with you");
+  // reply as JSON, plus the usual state so the page can refresh
+  server.send(200, "application/json", "{\"reply\":\"" + jsonEscape(speech) + "\",\"state\":" + stateJson() + "}");
 }
 
 void handlePet() {
@@ -1509,6 +1574,7 @@ void startWifi() {
   server.on("/pet", handlePet);
   server.on("/time", handleTime);
   server.on("/snack", []() { dropSnack(); sendState(); });
+  server.on("/chat", handleChat);
   server.on("/update", []() { checkForUpdate(); sendState(); });
   server.on("/diary", []() { sendSdFile("/pip/diary.csv", "text/csv"); });
   server.on("/sayings", []() { sendSdFile("/pip/sayings.txt", "text/plain"); });
@@ -1839,9 +1905,13 @@ void chatTick() {
     // Answer what Bloop said, unless Pip's own strong feelings win (asleep, grumpy or
     // sulky Pips say what they feel, whatever the subject). Either way a new sentence
     // goes into `speech` and shows in Pip's bubble.
+#ifdef PV_HAS_DIALOGUE
+    speakTo('O', pickMood(), bloopLine, 9000);   // Pip's voice reads Bloop's words and replies
+#else
     char mood = (action == A_NAP || pip.grumpy > 0.35f || pip.sulky > 0.35f) ? 0 : moodForBloopLine(bloopLine);
     if (mood) speak(mood, 9000);
     else speakSomething();
+#endif
     speechUntil = millis() + 9000;
     PalSay m = {};
     memcpy(m.magic, "PALS", 4);

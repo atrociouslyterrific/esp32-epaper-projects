@@ -33,7 +33,9 @@ STATUS_PATH = os.path.join(OUT, "status.json")
 CKPT_IN = os.path.join(ROOT, "training", "ckpt", "voice.pt")
 
 # Vocabulary: newline (end of sentence), ">", mood letters, then the alphabet Pip can write
-VOCAB = ["\n", ">"] + list(SC.MOODS) + list(SC.ALPHABET)
+# Newline ends a reply; "|" separates what was said from Pip's reply; I/O/E say who is talking
+# to Pip (I = nobody, Pip talks to itself; O = Bloop; E = you); then the moods and the alphabet.
+VOCAB = ["\n", "|"] + list(SC.SOURCES) + list(SC.MOODS) + list(SC.ALPHABET)
 IDX = {c: i for i, c in enumerate(VOCAB)}
 V = len(VOCAB)
 
@@ -67,11 +69,17 @@ def update_status(**voice):
     os.replace(tmp, STATUS_PATH)
 
 
-def generate(model, mood, temperature=0.8, rng=None, max_len=SC.MAX_LEN + 2):
-    """Write one sentence for a mood. temperature 0 = always the most likely letter."""
+def prompt_for(mood, src="I", heard=""):
+    """What the model reads before replying: who's talking, Pip's mood, what they said, "|"."""
+    heard = "".join(c for c in heard.lower() if c in SC.ALPHABET)[:SC.MAX_LEN]
+    return f"{src}{mood}{heard}|"
+
+
+def generate(model, mood, temperature=0.8, rng=None, max_len=SC.MAX_LEN + 2, src="I", heard=""):
+    """Pip's reply (or self-talk when src is "I"). temperature 0 = always the most likely letter."""
     with torch.no_grad():
         h = None
-        for c in mood + ">":
+        for c in prompt_for(mood, src, heard):
             logits, h = model(torch.tensor([[IDX[c]]]), h)
         out = ""
         for _ in range(max_len):
@@ -90,6 +98,18 @@ def generate(model, mood, temperature=0.8, rng=None, max_len=SC.MAX_LEN + 2):
 
 def samples(model, rng, per_mood=4):
     return {m: [generate(model, m, 0.8, rng) for _ in range(per_mood)] for m in SC.MOODS}
+
+
+# Fixed conversation openers, to show (and test) how Pip replies to Bloop and to you
+CHATS = [("E", "J", "how are you?"), ("E", "T", "want to play?"), ("E", "Y", "want to play?"), ("E", "H", "want a snack?"),
+         ("E", "G", "good morning pip"), ("E", "A", "i love you"), ("E", "L", "bye pip"), ("E", "C", "what are you doing?"),
+         ("O", "J", "hi pip!"), ("O", "Y", "chase me!"), ("O", "F", "the room is tipping!"), ("O", "H", "i found berries!")]
+
+
+def chat_samples(model, rng):
+    who = {"E": "you", "O": "Bloop"}
+    return [{"who": who[s], "mood": SC.MOODS[m], "heard": h, "reply": generate(model, m, 0.8, rng, src=s, heard=h)}
+            for s, m, h in CHATS]
 
 
 def load_checkpoint():
@@ -121,7 +141,7 @@ def train(ck=None):
     torch.manual_seed(seed)
     rng = np.random.default_rng(seed)
     lines = SC.make_lines(80000, seed=seed)
-    corpus = set(l.split(">", 1)[1] for l in lines)
+    corpus = set(l.split("|", 1)[1] for l in lines)
     stream = np.array([IDX[c] for c in "".join(l + "\n" for l in lines)], dtype=np.int64)
     model = Voice()
     steps = STEPS
@@ -148,8 +168,9 @@ def train(ck=None):
         if step % 100 == 0 or step == steps - 1:
             loss_hist.append(round(float(loss), 4))
             ex = samples(model, np.random.default_rng(step), per_mood=2)
+            chats = chat_samples(model, np.random.default_rng(step + 1))
             update_status(state="training", step=step + 1, total=steps, loss=loss_hist, samples=ex,
-                          chars_read=(step + 1) * BATCH * SEQ,
+                          chars_read=(step + 1) * BATCH * SEQ, chats=chats,
                           elapsed_s=round(time.time() - start))
             print(f"voice step {step:5d}  loss {float(loss):.3f}  e.g. P>{ex['P'][0]!r}  H>{ex['H'][0]!r}", flush=True)
     model.eval()
@@ -203,6 +224,7 @@ def export(model, path):
         f.write("#pragma once\n#include <math.h>\n#include <stdint.h>\n\n")
         f.write(f"#define PV_VOICE_VERSION {VOICE_GEN}\n")
         f.write(f"#define PV_V {V}\n#define PV_H {HIDDEN}\n")
+        f.write(f"#define PV_FIRST_LETTER {VOCAB.index(SC.ALPHABET[0])}  // where the alphabet starts in PV_VOCAB\n")
         f.write(f"static const char PV_VOCAB[PV_V + 1] = \"{vocab_c}\";\n\n")
         # 8-bit weight matrices (value = q * scale of its row); biases stay 32-bit
         for name, w in [("PV_WIH", g.weight_ih_l0), ("PV_WHH", g.weight_hh_l0), ("PV_WO", model.out.weight)]:
@@ -250,12 +272,14 @@ static void pv_logits(const float *h, float *out) {
   }
 }
 
-// Write a sentence for a mood letter. temperature 0 = most likely letters (used by the test).
+#define PV_HAS_DIALOGUE 1  // this voice can reply to what someone said
+
+// Write Pip's reply after reading a prompt: who's talking (I nobody / O Bloop / E you), Pip's
+// mood letter, what they said, then "|". temperature 0 = most likely letters (used by the test).
 // rand01 returns a random number in [0, 1). Returns the length written.
-static int pv_generate(char mood, char *out, int maxLen, float temperature, float (*rand01)(void)) {
+static int pv_generate_prompt(const char *prompt, char *out, int maxLen, float temperature, float (*rand01)(void)) {
   float h[PV_H] = {0}, lg[PV_V];
-  pv_step(h, pv_index(mood));
-  pv_step(h, pv_index('>'));
+  for (const char *c = prompt; *c; c++) { int t = pv_index(*c); if (t >= 0) pv_step(h, t); }
   int n = 0;
   while (n < maxLen) {
     pv_logits(h, lg);
@@ -275,6 +299,29 @@ static int pv_generate(char mood, char *out, int maxLen, float temperature, floa
   }
   out[n] = 0;
   return n;
+}
+
+// Self-talk for a mood (what Pip says when nobody is talking to it)
+static int pv_generate(char mood, char *out, int maxLen, float temperature, float (*rand01)(void)) {
+  char prompt[4] = {'I', mood, '|', 0};
+  return pv_generate_prompt(prompt, out, maxLen, temperature, rand01);
+}
+
+// Reply to someone: src 'O' (Bloop) or 'E' (you). heard = what they said.
+static int pv_reply(char src, char mood, const char *heard, char *out, int maxLen, float temperature, float (*rand01)(void)) {
+  char prompt[40];
+  int n = 0;
+  prompt[n++] = src;
+  prompt[n++] = mood;
+  for (const char *c = heard; *c && n < 2 + 28; c++) {
+    char ch = (*c >= 'A' && *c <= 'Z') ? *c + 32 : *c;   // the voice only knows lowercase
+    if (ch == '|' || ch == '\n') continue;
+    for (int v = 0; v < PV_V; v++)
+      if (PV_VOCAB[v] == ch && v >= PV_FIRST_LETTER) { prompt[n++] = ch; break; }   // only alphabet characters
+  }
+  prompt[n++] = '|';
+  prompt[n] = 0;
+  return pv_generate_prompt(prompt, out, maxLen, temperature, rand01);
 }
 """)
 
@@ -309,10 +356,13 @@ if __name__ == "__main__":
                os.path.join(OUT, "ckpt", "voice.pt"))
     export(model, os.path.join(ROOT, "PipAI", "pip_voice.h"))
     board_model = quantized_copy(model)  # exactly what runs on the board (8-bit)
-    with open(os.path.join(OUT, "voice_test.txt"), "w") as f:
+    with open(os.path.join(OUT, "voice_test.txt"), "w") as f:  # prompt <tab> reply, for the C test
         for m in SC.MOODS:
-            f.write(f"{m}\t{generate(board_model, m, 0)}\n")
+            f.write(f"{prompt_for(m)}\t{generate(board_model, m, 0)}\n")
+        for src, m, heard in CHATS:
+            f.write(f"{prompt_for(m, src, heard)}\t{generate(board_model, m, 0, src=src, heard=heard)}\n")
     update_status(board_test_loss=round(test_loss(board_model), 4),  # cost of the 8-bit squeeze
                   board_samples={m: [generate(board_model, m, 0.8, np.random.default_rng(i)) for i in range(3)]
-                                 for m in ["P", "H", "J", "G"]})
+                                 for m in ["P", "H", "J", "G"]},
+                  chats=chat_samples(board_model, np.random.default_rng(5)))
     update_status(state="done")
