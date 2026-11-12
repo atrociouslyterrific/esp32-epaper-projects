@@ -907,6 +907,15 @@ function buildGallery() {
 // ------------------------------------------------------------ network diagram
 const GROUPS = [["needs", 5], ["bad moods", 4], ["temp & humidity", 2], ["time of day", 2], ["sound", 1], ["battery", 2], ["your touch", 1],
   ["tilt", 4], ["something changed", 1], ["personality", 5], ["last action", ACTIONS.length], ["repeating", 1]];
+// Largest |value| in a (possibly nested) array. A loop, not Math.max(...arr): big brains have
+// hundreds of thousands of weights, more than the browser allows as function arguments.
+function absMaxOf(arr) {
+  let m = 0;
+  const visit = a => { for (const v of a) { if (Array.isArray(v) || ArrayBuffer.isView(v)) visit(v); else { const x = Math.abs(v); if (x > m) m = x; } } };
+  visit(arr);
+  return m;
+}
+
 function renderNet() {
   const svg = $("net"), Wd = 820, Ht = 420, T = 14, B = 14;
   const nIn = brain ? brain.W1[0].length : INPUT_NAMES.length, nHid = brain ? brain.W1.length : 96;
@@ -922,7 +931,7 @@ function renderNet() {
       continue;
     }
     // Group lines by sign and strength so thousands of weights stay fast to draw
-    const M = mats[k], max = Math.max(...M.flat().map(Math.abs)), buckets = {};
+    const M = mats[k], max = Math.max(1e-6, absMaxOf(M)), buckets = {};
     M.forEach((row, o) => row.forEach((v, i) => {
       const s = Math.abs(v) / max; if (s < .18) return;
       const key = (v >= 0 ? "p" : "n") + Math.min(4, Math.floor(s * 5));
@@ -1011,7 +1020,7 @@ function drawHeat(canvas, M, opts) {
   canvas.width = W * dpr; canvas.height = H * dpr; canvas.style.width = W + "px"; canvas.style.height = H + "px";
   const c = canvas.getContext("2d"); c.setTransform(dpr, 0, 0, dpr, 0, 0);
   const bg = hexToRgb(css("--card")), pos = hexToRgb(css("--accent")), neg = hexToRgb(css("--neg"));
-  const max = Math.max(1e-6, ...M.flat().map(Math.abs));
+  const max = Math.max(1e-6, absMaxOf(M));
   c.fillStyle = css("--card"); c.fillRect(0, 0, W, H);
   M.forEach((row, i) => row.forEach((v, j) => { c.fillStyle = weightColor(v, max, bg, pos, neg); c.fillRect(labelW + j * cell, labelH + i * cell, cell - (cell > 6 ? 1 : 0), cell - (cell > 6 ? 1 : 0)); }));
   c.fillStyle = css("--muted"); c.font = `10px ${css("--f-mono")}`;
@@ -1038,7 +1047,7 @@ function attachTip(canvas) {
 function renderWeights() {
   if (!brain) { $("wmeta").textContent = "Weights appear after the first training run."; return; }
   const all = [...brain.W1.flat(), ...brain.b1, ...brain.W2.flat(), ...brain.b2, ...brain.W3.flat(), ...brain.b3];
-  const absMax = Math.max(...all.map(Math.abs)), mean = all.reduce((a, b) => a + b, 0) / all.length;
+  const absMax = Math.max(1e-6, absMaxOf(all)), mean = all.reduce((a, b) => a + b, 0) / all.length;
   $("wmeta").textContent = `${brainSource} · ${all.length.toLocaleString()} numbers · largest ${absMax.toFixed(2)} · average ${mean >= 0 ? "+" : ""}${mean.toFixed(3)}`;
   const actionNames = ACTIONS.map(a => a.replace("_", " "));
   const influence = matMul(matMul(brain.W3, brain.W2), brain.W1);  // 10 x 34
