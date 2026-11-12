@@ -14,6 +14,9 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+# The brain and the voice train at the same time on GitHub's 4-core machine: 2 cores each.
+torch.set_num_threads(int(os.environ.get("PIP_THREADS", "2")))
+
 sys.path.insert(0, os.path.dirname(__file__))
 import pip_world as W  # noqa: E402
 
@@ -42,6 +45,12 @@ def write_status(**changes):
     """Save training progress; the workflow uploads this file for the status website."""
     STATUS.update(changes)
     STATUS["updated"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    try:  # the voice trains at the same time and writes its own part of this file: keep it
+        voice = json.load(open(STATUS_PATH)).get("voice")
+        if voice is not None:
+            STATUS["voice"] = voice
+    except Exception:
+        pass
     tmp = STATUS_PATH + ".tmp"
     with open(tmp, "w") as f:
         json.dump(STATUS, f)
@@ -406,4 +415,8 @@ if __name__ == "__main__":
     personality_report(board_actor, os.path.join(OUT, "report.md"))
     write_status(board_score=round(evaluate(board_actor), 4))  # how much the 8-bit squeeze costs
     torch.save(actor.state_dict(), os.path.join(OUT, "actor.pt"))
-    write_status(state="trained")
+    try:  # if the voice is still going, say so
+        voice_busy = json.load(open(STATUS_PATH)).get("voice", {}).get("state") in ("starting", "training")
+    except Exception:
+        voice_busy = False
+    write_status(state="voice" if voice_busy else "trained")

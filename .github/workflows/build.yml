@@ -54,7 +54,10 @@ jobs:
       - name: Check the sketch is ready
         id: ready
         run: |
-          if [ "${{ matrix.sketch }}" = "PipAI" ] && { [ ! -f PipAI/pip_brain.h ] || [ ! -f PipAI/pip_voice.h ]; }; then
+          if [ "${{ github.event_name }}" = "workflow_run" ] && [ "${{ matrix.sketch }}" != "PipAI" ]; then
+            echo "Only PipAI changes after training - skipping ${{ matrix.sketch }}."
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          elif [ "${{ matrix.sketch }}" = "PipAI" ] && { [ ! -f PipAI/pip_brain.h ] || [ ! -f PipAI/pip_voice.h ]; }; then
             echo "PipAI's brain or voice hasn't been trained yet - skipping until training finishes."
             echo "go=false" >> "$GITHUB_OUTPUT"
           elif [ "${{ matrix.sketch }}" = "PipAI" ] && grep -q 'pip_hidden(' PipAI/PipAI.ino && ! grep -q 'pip_hidden' PipAI/pip_brain.h; then
@@ -69,14 +72,23 @@ jobs:
       - uses: arduino/setup-arduino-cli@v2
         if: steps.ready.outputs.go == 'true'
 
+      - name: Reuse the ESP32 tools from earlier builds (saves a couple of minutes)
+        if: steps.ready.outputs.go == 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.arduino15
+            ~/Arduino/libraries
+          key: arduino-esp32-arm-${{ runner.os }}-v1
+
       - name: Install ESP32 core and libraries
         if: steps.ready.outputs.go == 'true'
         run: |
           arduino-cli config init
           arduino-cli config add board_manager.additional_urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
           arduino-cli core update-index
-          arduino-cli core install esp32:esp32
-          arduino-cli lib install GxEPD2
+          arduino-cli core list | grep -q "^esp32:esp32" || arduino-cli core install esp32:esp32
+          arduino-cli lib list | grep -q "^GxEPD2" || arduino-cli lib install GxEPD2
 
       - name: Stamp the version number (Pip compares it to decide whether to update)
         if: steps.ready.outputs.go == 'true' && matrix.sketch == 'PipAI'

@@ -15,6 +15,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+torch.set_num_threads(int(os.environ.get("PIP_THREADS", "2")))  # shares the machine with the brain
+
 sys.path.insert(0, os.path.dirname(__file__))
 import speech_corpus as SC  # noqa: E402
 
@@ -53,9 +55,11 @@ def update_status(**voice):
     except Exception:
         s = {}
     s.setdefault("voice", {}).update(voice)
-    if voice.get("state") in ("starting", "training"):
+    # The brain trains at the same time; only touch the overall state once the brain is done
+    brain_done = s.get("state") in ("voice", "trained")
+    if brain_done and voice.get("state") in ("starting", "training"):
         s["state"] = "voice"
-    elif voice.get("state") in ("trained", "done"):
+    elif brain_done and voice.get("state") in ("trained", "done"):
         s["state"] = "trained"
     s["updated"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     tmp = STATUS_PATH + ".tmp"

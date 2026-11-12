@@ -81,13 +81,18 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           git update-index --chmod=+x training/push_status.sh 2>/dev/null; chmod +x training/push_status.sh
-          (python training/train.py && python training/train_voice.py) &
-          TRAIN_PID=$!
-          while kill -0 $TRAIN_PID 2>/dev/null; do
+          # Brain and voice train at the same time (2 cores each) - about twice as fast
+          python training/train.py & BRAIN_PID=$!
+          sleep 5   # let the brain write the first progress file
+          python training/train_voice.py & VOICE_PID=$!
+          while kill -0 $BRAIN_PID 2>/dev/null || kill -0 $VOICE_PID 2>/dev/null; do
             sleep 20
             training/push_status.sh || true
           done
-          wait $TRAIN_PID
+          wait $BRAIN_PID; B=$?
+          wait $VOICE_PID; V=$?
+          echo "brain exit $B, voice exit $V"
+          [ $B -eq 0 ] && [ $V -eq 0 ]
 
       - name: Check the C brain + world match Python
         env:
