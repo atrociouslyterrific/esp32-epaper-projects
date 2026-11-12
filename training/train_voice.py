@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 import speech_corpus as SC  # noqa: E402
 
 SEED = 11
-HIDDEN = 160  # memory cells (was 128, before that 96)
+HIDDEN = 256  # memory cells (was 160, 128, 96)
 STEPS = int(os.environ.get("PIP_VOICE_STEPS", "5000"))                 # from scratch
 CONTINUE_STEPS = int(os.environ.get("PIP_VOICE_CONTINUE_STEPS", "2000"))  # nightly top-up
 CONTINUE_LR = 1e-3
@@ -159,8 +159,33 @@ def train(ck=None):
 
 
 def c_array(name, t):
-    flat = t.detach().numpy().astype(np.float32).ravel()
+    flat = (t.detach().numpy() if hasattr(t, "detach") else np.asarray(t)).astype(np.float32).ravel()
     return f"static const float {name}[{flat.size}] = {{" + ",".join(f"{v:.7g}f" for v in flat) + "};\n"
+
+
+def quantize_rows(w):
+    """8-bit weights with one scale per row (4x smaller than 32-bit, so the voice can be bigger)."""
+    w = w.detach().numpy().astype(np.float32)
+    scale = np.maximum(np.abs(w).max(axis=1), 1e-8) / 127.0
+    q = np.clip(np.round(w / scale[:, None]), -127, 127).astype(np.int8)
+    return q, scale.astype(np.float32)
+
+
+def int8_array(name, q):
+    flat = q.ravel()
+    return f"static const int8_t {name}[{flat.size}] = {{" + ",".join(str(int(v)) for v in flat) + "};\n"
+
+
+def quantized_copy(model):
+    """The voice exactly as the board runs it (8-bit weight matrices)."""
+    qm = Voice()
+    qm.load_state_dict(model.state_dict())
+    with torch.no_grad():
+        for w in (qm.gru.weight_ih_l0, qm.gru.weight_hh_l0, qm.out.weight):
+            q, sc = quantize_rows(w)
+            w.copy_(torch.from_numpy(q.astype(np.float32) * sc[:, None]))
+    qm.eval()
+    return qm
 
 
 VOICE_GEN = 1
@@ -175,11 +200,13 @@ def export(model, path):
         f.write(f"#define PV_VOICE_VERSION {VOICE_GEN}\n")
         f.write(f"#define PV_V {V}\n#define PV_H {HIDDEN}\n")
         f.write(f"static const char PV_VOCAB[PV_V + 1] = \"{vocab_c}\";\n\n")
-        f.write(c_array("PV_WIH", g.weight_ih_l0))   # [3H][V]  gates r, z, n
-        f.write(c_array("PV_WHH", g.weight_hh_l0))   # [3H][H]
+        # 8-bit weight matrices (value = q * scale of its row); biases stay 32-bit
+        for name, w in [("PV_WIH", g.weight_ih_l0), ("PV_WHH", g.weight_hh_l0), ("PV_WO", model.out.weight)]:
+            q, sc = quantize_rows(w)   # PV_WIH [3H][V] gates r,z,n · PV_WHH [3H][H] · PV_WO [V][H]
+            f.write(int8_array(name + "Q", q))
+            f.write(c_array(name + "S", sc))
         f.write(c_array("PV_BIH", g.bias_ih_l0))
         f.write(c_array("PV_BHH", g.bias_hh_l0))
-        f.write(c_array("PV_WO", model.out.weight))  # [V][H]
         f.write(c_array("PV_BO", model.out.bias))
         f.write("""
 static inline float pv_sig(float x) { return 1.0f / (1.0f + expf(-x)); }
@@ -193,12 +220,18 @@ static int pv_index(char c) {
 static void pv_step(float *h, int tok) {
   float hn[PV_H];
   for (int j = 0; j < PV_H; j++) {
-    float hr = PV_BHH[j], hz = PV_BHH[PV_H + j], hh = PV_BHH[2 * PV_H + j];
-    const float *wr = PV_WHH + j * PV_H, *wz = PV_WHH + (PV_H + j) * PV_H, *wn = PV_WHH + (2 * PV_H + j) * PV_H;
-    for (int k = 0; k < PV_H; k++) { hr += wr[k] * h[k]; hz += wz[k] * h[k]; hh += wn[k] * h[k]; }
-    float r = pv_sig(PV_WIH[j * PV_V + tok] + PV_BIH[j] + hr);
-    float z = pv_sig(PV_WIH[(PV_H + j) * PV_V + tok] + PV_BIH[PV_H + j] + hz);
-    float n = tanhf(PV_WIH[(2 * PV_H + j) * PV_V + tok] + PV_BIH[2 * PV_H + j] + r * hh);
+    const int8_t *wr = PV_WHHQ + j * PV_H, *wz = PV_WHHQ + (PV_H + j) * PV_H, *wn = PV_WHHQ + (2 * PV_H + j) * PV_H;
+    float ar = 0, az = 0, an = 0;
+    for (int k = 0; k < PV_H; k++) { ar += (float)wr[k] * h[k]; az += (float)wz[k] * h[k]; an += (float)wn[k] * h[k]; }
+    float hr = PV_BHH[j] + PV_WHHS[j] * ar;
+    float hz = PV_BHH[PV_H + j] + PV_WHHS[PV_H + j] * az;
+    float hh = PV_BHH[2 * PV_H + j] + PV_WHHS[2 * PV_H + j] * an;
+    float xr = (float)PV_WIHQ[j * PV_V + tok] * PV_WIHS[j];
+    float xz = (float)PV_WIHQ[(PV_H + j) * PV_V + tok] * PV_WIHS[PV_H + j];
+    float xn = (float)PV_WIHQ[(2 * PV_H + j) * PV_V + tok] * PV_WIHS[2 * PV_H + j];
+    float r = pv_sig(xr + PV_BIH[j] + hr);
+    float z = pv_sig(xz + PV_BIH[PV_H + j] + hz);
+    float n = tanhf(xn + PV_BIH[2 * PV_H + j] + r * hh);
     hn[j] = (1 - z) * n + z * h[j];
   }
   for (int j = 0; j < PV_H; j++) h[j] = hn[j];
@@ -206,9 +239,10 @@ static void pv_step(float *h, int tok) {
 
 static void pv_logits(const float *h, float *out) {
   for (int v = 0; v < PV_V; v++) {
-    float s = PV_BO[v];
-    for (int k = 0; k < PV_H; k++) s += PV_WO[v * PV_H + k] * h[k];
-    out[v] = s;
+    float acc = 0;
+    const int8_t *row = PV_WOQ + v * PV_H;
+    for (int k = 0; k < PV_H; k++) acc += (float)row[k] * h[k];
+    out[v] = PV_BO[v] + PV_WOS[v] * acc;
   }
 }
 
@@ -270,7 +304,11 @@ if __name__ == "__main__":
     torch.save({"model": model.state_dict(), "gen": gen, "vocab": VOCAB, "hidden": HIDDEN, "test_loss": new_loss},
                os.path.join(OUT, "ckpt", "voice.pt"))
     export(model, os.path.join(ROOT, "PipAI", "pip_voice.h"))
+    board_model = quantized_copy(model)  # exactly what runs on the board (8-bit)
     with open(os.path.join(OUT, "voice_test.txt"), "w") as f:
         for m in SC.MOODS:
-            f.write(f"{m}\t{generate(model, m, 0)}\n")
+            f.write(f"{m}\t{generate(board_model, m, 0)}\n")
+    update_status(board_test_loss=round(test_loss(board_model), 4),  # cost of the 8-bit squeeze
+                  board_samples={m: [generate(board_model, m, 0.8, np.random.default_rng(i)) for i in range(3)]
+                                 for m in ["P", "H", "J", "G"]})
     update_status(state="done")

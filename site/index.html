@@ -942,7 +942,13 @@ let brain = null, brainSource = "", headerFetchedAt = 0;
 
 function parseHeader(text) {
   const get = n => { const m = text.match(new RegExp(`PIP_${n}\\[\\d+\\] = \\{([^}]*)\\}`)); return m ? m[1].split(",").map(v => parseFloat(v)) : null; };
-  const f = { W1: get("W1"), B1: get("B1"), W2: get("W2"), B2: get("B2"), W3: get("W3"), B3: get("B3") };
+  const getQ = n => { const m = text.match(new RegExp(`PIP_${n}Q\\[\\d+\\] = \\{([^}]*)\\}`)); return m ? m[1].split(",").map(Number) : null; };
+  const deq = (n, cols) => {  // 8-bit weights: value = q * scale of its row
+    const q = getQ(n), sc = get(n + "S"); if (!q || !sc) return null;
+    return q.map((v, i) => v * sc[Math.floor(i / cols)]);
+  };
+  const nInQ = +(text.match(/#define PIP_N_IN (\d+)/) || [])[1], nHidQ = +(text.match(/#define PIP_N_HID (\d+)/) || [])[1];
+  const f = { W1: get("W1") || deq("W1", nInQ), B1: get("B1"), W2: get("W2") || deq("W2", nHidQ), B2: get("B2"), W3: get("W3"), B3: get("B3") };
   if (Object.values(f).some(v => !v)) return null;
   const rows = (flat, n, m) => Array.from({ length: n }, (_, i) => flat.slice(i * m, (i + 1) * m));
   const def = n => +(text.match(new RegExp(`#define ${n} (\\d+)`)) || [])[1];
@@ -951,13 +957,17 @@ function parseHeader(text) {
   return { W1: rows(f.W1, nHid, nIn), b1: f.B1, W2: rows(f.W2, nHid, nHid), b2: f.B2, W3: rows(f.W3, nOut, nHid), b3: f.B3 };
 }
 
+let liveFetchedFor = -1;
 async function loadBrain() {
-  if (status?.weights) {
-    brain = status.weights;
-    brainSource = status.state === "training" ? `Live from training · update ${status.weights.update ?? status.update} of ${status.total_updates}` :
-      `From the latest training run · ${status.commit || ""}`;
-    return;
+  // While training: the live weights file (refreshed every 100 updates; the file server may lag a few minutes)
+  if (status?.state === "training" && status.live_weights_update && status.live_weights_update !== liveFetchedFor) {
+    try {
+      const r = await fetch(`https://raw.githubusercontent.com/${REPO}/status/models/live_brain.json?u=${status.live_weights_update}`, { cache: "no-store" });
+      if (r.ok) { brain = await r.json(); liveFetchedFor = status.live_weights_update;
+        brainSource = `Live from training · update ${brain.update} of ${status.total_updates}`; return; }
+    } catch (e) { /* fall back to the saved brain */ }
   }
+  if (status?.state === "training" && brainSource.startsWith("Live")) return;
   if (brain && Date.now() - headerFetchedAt < 300000) return;
   try {
     let r = await fetch(`https://raw.githubusercontent.com/${REPO}/status/models/pip_brain.h`, { cache: "no-store" });
@@ -1089,7 +1099,16 @@ function parseVoice(text) {
   const H = +(text.match(/#define PV_H (\d+)/) || [])[1];
   if (!vm || !H) return null;
   const vocab = vm[1].replace(/\\n/g, "\n").replace(/\\'/g, "'").replace(/\\\\/g, "\\").split("");
-  const v = { vocab, V: vocab.length, H, Wih: arr("WIH"), Whh: arr("WHH"), bih: arr("BIH"), bhh: arr("BHH"), Wo: arr("WO"), bo: arr("BO") };
+  const V0 = vocab.length;
+  const arrQ = (n, cols) => {  // 8-bit matrices: value = q * scale of its row
+    const m = text.match(new RegExp(`PV_${n}Q\\[\\d+\\] = \\{([^}]*)\\}`)), sc = arr(n + "S");
+    if (!m || !sc) return null;
+    const q = m[1].split(","), out = new Float32Array(q.length);
+    for (let i = 0; i < q.length; i++) out[i] = +q[i] * sc[Math.floor(i / cols)];
+    return out;
+  };
+  const v = { vocab, V: V0, H, Wih: arr("WIH") || arrQ("WIH", V0), Whh: arr("WHH") || arrQ("WHH", H), bih: arr("BIH"), bhh: arr("BHH"),
+              Wo: arr("WO") || arrQ("WO", H), bo: arr("BO") };
   return [v.Wih, v.Whh, v.bih, v.bhh, v.Wo, v.bo].every(Boolean) ? v : null;
 }
 async function loadVoice() {

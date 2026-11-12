@@ -314,10 +314,8 @@ const float MAX_DRIFT = 1.0f;      // never drift further than this from the tra
 Preferences learnPrefs;
 
 void brainForward(const float *x, float *logits) {
-  float h1[PIP_N_HID];
-  pip_dense(PIP_W1, PIP_B1, x, PIP_N_IN, PIP_N_HID, h1, 1);
-  pip_dense(PIP_W2, PIP_B2, h1, PIP_N_HID, PIP_N_HID, lastH2, 1);
-  pip_dense(liveW3, liveB3, lastH2, PIP_N_HID, PIP_N_OUT, logits, 0);
+  pip_hidden(x, lastH2);   // layers 1-2 (8-bit weights from training)
+  pip_dense(liveW3, liveB3, lastH2, PIP_N_HID, PIP_N_OUT, logits, 0);  // layer 3, which keeps learning
 }
 
 void saveLearning() {

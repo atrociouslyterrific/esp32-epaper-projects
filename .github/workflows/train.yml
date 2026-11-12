@@ -42,7 +42,7 @@ jobs:
     # changes training/, so without this guard it could retrain itself forever).
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-24.04-arm  # ARM pool: the x64 ubuntu-latest/24.04 runners stopped picking up jobs (Nov 2026)
-    timeout-minutes: 60
+    timeout-minutes: 150  # a from-scratch run of the big models can take over an hour
     steps:
       - uses: actions/checkout@v4
 

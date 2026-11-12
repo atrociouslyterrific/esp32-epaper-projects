@@ -16,7 +16,7 @@ fi
 cp "$SRC" "$DIR/status.json"
 # The trained models, for the website's weight pictures (written at the end of a run)
 MODELS="$(dirname "$SRC")/models"
-if [ -d "$MODELS" ]; then mkdir -p "$DIR/models" && cp "$MODELS"/*.h "$DIR/models/"; fi
+if [ -d "$MODELS" ]; then mkdir -p "$DIR/models" && cp "$MODELS"/* "$DIR/models/"; fi
 # GitHub's raw file server caches each file for up to 5 minutes, so the website would
 # see stale progress. Also save a copy named after the current minute: a new name each
 # minute can't be cached yet. Keep only the last 10 minutes of these copies.
