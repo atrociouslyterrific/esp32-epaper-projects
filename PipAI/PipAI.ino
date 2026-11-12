@@ -1764,6 +1764,45 @@ void palStart() {
   if (palReady) palTicker.attach_ms(250, palBeacon);
 }
 
+// Does `line` (lowercase) contain one of the words in `words` (separated by '|'),
+// starting at the start of a word? So "eat" matches "eat" and "eating", not "great".
+bool lineHasWord(const char *line, const char *words) {
+  const char *w = words;
+  while (*w) {
+    const char *end = strchr(w, '|');
+    int n = end ? (int)(end - w) : (int)strlen(w);
+    for (const char *at = line; *at; at++) {
+      bool wordStart = at == line || !isalpha((unsigned char)at[-1]);
+      if (wordStart && strncmp(at, w, n) == 0) return true;
+    }
+    if (!end) break;
+    w = end + 1;
+  }
+  return false;
+}
+
+// Which of Pip's moods fits what Bloop just said? (The mood picks what Pip's voice
+// talks about.) Returns 0 when nothing fits.
+char moodForBloopLine(const char *said) {
+  char line[58];
+  int n = 0;
+  for (; said[n] && n < 57; n++) line[n] = tolower((unsigned char)said[n]);
+  line[n] = 0;
+  if (lineHasWord(line, "bye|see you|come back")) return 'L';                                     // will miss you
+  if (lineHasWord(line, "ow|ouch|oof|bonk|fell|whoa|shak|earthquake|tilt|eep")) return 'F';       // oh no!
+  if (lineHasWord(line, "food|snack|eat|hungry|yum|tummy|nom|crunch")) return 'H';
+  if (lineHasWord(line, "sleep|nap|tired|yawn|zzz|bed|night")) return 'T';
+  if (lineHasWord(line, "dance|boogie|wiggle|rhythm")) return 'D';
+  if (lineHasWord(line, "play|toy|ball|kick|jump|boing|roll|trick|goal|fast")) return 'Y';
+  if (lineHasWord(line, "window|sky|cloud|outside|star|fly")) return 'V';
+  if (lineHasWord(line, "cold|dark|brr")) return 'K';
+  if (lineHasWord(line, "you came|hi pip|welcome|friend|love|hug|best|favourite|pats")) return 'A';
+  if (lineHasWord(line, "sad|sorry|nobody|sniff")) return 'A';                                    // comfort
+  if (lineHasWord(line, "yay|hooray|happy|great|good bloop|i did it")) return 'J';
+  if (strchr(line, '?')) return 'C';                                                             // curious
+  return 0;
+}
+
 // Pip's side of the conversation. Bloop starts chats and sends each thing it says;
 // Pip shows it in Bloop's bubble, thinks for a moment, then answers with a line from
 // its own voice (in whatever mood it's in) and sends that back for Bloop's screen.
@@ -1788,7 +1827,12 @@ void chatTick() {
   if (!bloopHere) { pipReplyAt = 0; return; }
   if (pipReplyAt && millis() >= pipReplyAt) {
     pipReplyAt = 0;
-    speakSomething();   // writes a new sentence into `speech` and shows it in Pip's bubble
+    // Answer what Bloop said, unless Pip's own strong feelings win (asleep, grumpy or
+    // sulky Pips say what they feel, whatever the subject). Either way a new sentence
+    // goes into `speech` and shows in Pip's bubble.
+    char mood = (action == A_NAP || pip.grumpy > 0.35f || pip.sulky > 0.35f) ? 0 : moodForBloopLine(bloopLine);
+    if (mood) speak(mood, 9000);
+    else speakSomething();
     speechUntil = millis() + 9000;
     PalSay m = {};
     memcpy(m.magic, "PALS", 4);
