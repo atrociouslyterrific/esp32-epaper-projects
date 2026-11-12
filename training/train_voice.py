@@ -23,7 +23,7 @@ import speech_corpus as SC  # noqa: E402
 SEED = 11
 HIDDEN = 512  # memory cells (was 256, 160, 128, 96)
 STEPS = int(os.environ.get("PIP_VOICE_STEPS", "5000"))                 # from scratch
-CONTINUE_STEPS = int(os.environ.get("PIP_VOICE_CONTINUE_STEPS", "2000"))  # nightly top-up
+CONTINUE_STEPS = int(os.environ.get("PIP_VOICE_CONTINUE_STEPS", "5000"))  # each top-up run (was 2000: too little, Pip wrote gibberish)
 CONTINUE_LR = 1e-3
 BATCH, SEQ, LR = 128, 96, 3e-3
 
@@ -206,6 +206,11 @@ def train(ck=None):
     # How many generated sentences are new (not copied from the examples)?
     test = [generate(model, m, 0.8, np.random.default_rng(1000 + i)) for i, m in enumerate(list(SC.MOODS) * 12)]
     novel = sum(t not in corpus for t in test) / len(test)
+    # ...and how many contain a made-up word (gibberish)? The board refuses to say those.
+    known = set(SC.known_words(lines))
+    gibberish = sum(any(w not in known for w in SC.words_in(t)) for t in test) / len(test)
+    update_status(gibberish_fraction=round(gibberish, 3))
+    print(f"voice: {gibberish:.0%} of sampled sentences contain a made-up word", flush=True)
     update_status(state="trained", samples=samples(model, np.random.default_rng(7), per_mood=6),
                   novel_fraction=round(novel, 3), params=sum(p.numel() for p in model.parameters()))
     print(f"voice: {novel:.0%} of sampled sentences are new combinations", flush=True)

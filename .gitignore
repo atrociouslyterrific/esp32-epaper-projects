@@ -2,3 +2,4 @@ training/out/
 __pycache__/
 training/ckpt/
 PipAI/pip_version.h
+PipAI/pip_words.h

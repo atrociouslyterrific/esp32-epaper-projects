@@ -10,6 +10,8 @@ variety of combinations and learns how Pip's sentences fit together.
 """
 import random
 
+from bloop_lines import BLOOP_SAYS   # what Bloop really says (a snapshot from Bloop's own generator)
+
 ALPHABET = "abcdefghijklmnopqrstuvwxyz !?.,'~*<3"
 MAX_LEN = 28  # fits in the speech bubble on the 200-pixel screen (31 max)
 
@@ -220,6 +222,24 @@ def reply_line(intent, mood, rng):
     return rng.choice(options)
 
 
+def words_in(text):
+    """The words in a sentence, the way Pip's board splits them: runs of letters and apostrophes."""
+    out, cur = [], ""
+    for c in text.lower() + " ":
+        if c.isalpha() or c == "'":
+            cur += c
+        else:
+            if cur.strip("'"):
+                out.append(cur.strip("'"))
+            cur = ""
+    return out
+
+
+def known_words(lines):
+    """Every word Pip is taught to SAY (from the reply half of the training lines)."""
+    return sorted({w for l in lines for w in words_in(l.split("|", 1)[1])})
+
+
 def make_lines(n, seed=1, talk_share=0.55):
     """Training lines: about 55% conversations (with Bloop or you), 45% self-talk."""
     rng = random.Random(seed)
@@ -232,6 +252,10 @@ def make_lines(n, seed=1, talk_share=0.55):
             src = rng.choice("OE")
             intent = rng.choice(intents)
             heard_opts = HEARD[intent][1 if src == "O" else 0]
+            # Mostly practise on Bloop's REAL lines: with only the few made-up ones above, the real
+            # Bloop's sentences were unfamiliar and Pip answered them with gibberish.
+            if src == "O" and intent in BLOOP_SAYS and rng.random() < 0.75:
+                heard_opts = BLOOP_SAYS[intent]
             if not heard_opts:
                 continue
             heard = fill(rng.choice(heard_opts), rng)

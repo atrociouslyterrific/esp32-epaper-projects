@@ -1260,6 +1260,40 @@ void speak(char mood, unsigned long ms) { speakTo(0, mood, "", ms); }
 // Pip says something. src 0 = to itself; 'O' = replying to Bloop; 'E' = replying to you,
 // with `heard` = what they said. The voice model reads who's talking, Pip's mood and their
 // words, then writes Pip's reply letter by letter.
+// ---- No made-up words ----
+// The voice writes letter by letter, so now and then it invents a word ("nerveep").
+// GitHub's build makes a list of every word Pip was really taught (pip_words.h); a
+// sentence with a word that isn't on it is thrown away and Pip tries again.
+#if __has_include("pip_words.h")
+#include "pip_words.h"
+bool isRealWord(const char *w, int len) {
+  int lo = 0, hi = PIP_N_WORDS - 1;
+  while (lo <= hi) {   // the list is in alphabetical order: halve it until found
+    int mid = (lo + hi) / 2;
+    int c = strncmp(w, PIP_WORDS[mid], len);
+    if (c == 0) c = PIP_WORDS[mid][len] ? -1 : 0;   // same start, but the list's word is longer
+    if (c == 0) return true;
+    if (c < 0) hi = mid - 1; else lo = mid + 1;
+  }
+  return false;
+}
+bool allRealWords(const char *text) {
+  const char *p = text;
+  while (*p) {
+    while (*p && !(*p >= 'a' && *p <= 'z') && *p != '\'') p++;   // skip spaces and punctuation
+    const char *start = p;
+    while ((*p >= 'a' && *p <= 'z') || *p == '\'') p++;
+    const char *end = p;
+    while (start < end && *start == '\'') start++;               // quotes around a word don't count
+    while (end > start && end[-1] == '\'') end--;
+    if (end > start && !isRealWord(start, (int)(end - start))) return false;
+  }
+  return true;
+}
+#else
+bool allRealWords(const char *text) { (void)text; return true; }   // no list (built off GitHub): can't check
+#endif
+
 void speakTo(char src, char mood, const char *heard, unsigned long ms) {
   // Whatever the model writes is shown, as long as it's a proper sentence:
   // not empty, finished before running off the bubble, and only normal characters
@@ -1267,15 +1301,22 @@ void speakTo(char src, char mood, const char *heard, unsigned long ms) {
   const int MAX_CHARS = 31;  // the widest bubble that fits on the 200-pixel screen
   char text[MAX_CHARS + 2];
   bool ok = false;
+  // A reply gets 3 tries. If they all come out garbled (what was said was too unfamiliar),
+  // Pip says something of its own instead: about the same subject when Bloop was talking.
+  // The temperature is how adventurous the letter choices are; 0.6 (was 0.75) keeps it sensible.
+  const float TEMPERATURE = 0.6f;
+  char ownMood = mood;
+  if (src == 'O' && moodForBloopLine(heard)) ownMood = moodForBloopLine(heard);
   for (int attempt = 0; attempt < 5 && !ok; attempt++) {
 #ifdef PV_HAS_DIALOGUE
-    int n = src ? pv_reply(src, mood, heard, text, MAX_CHARS + 1, 0.75f, voiceRand01)
-                : pv_generate(mood, text, MAX_CHARS + 1, 0.75f, voiceRand01);
+    int n = (src && attempt < 3) ? pv_reply(src, mood, heard, text, MAX_CHARS + 1, TEMPERATURE, voiceRand01)
+                                 : pv_generate(src ? ownMood : mood, text, MAX_CHARS + 1, TEMPERATURE, voiceRand01);
 #else
-    int n = pv_generate(mood, text, MAX_CHARS + 1, 0.75f, voiceRand01);  // older voice: can't read replies
+    int n = pv_generate(src ? ownMood : mood, text, MAX_CHARS + 1, TEMPERATURE, voiceRand01);  // older voice: can't read replies
 #endif
     ok = n >= 1 && n <= MAX_CHARS;
     for (int i = 0; ok && i < n; i++) ok = strchr("abcdefghijklmnopqrstuvwxyz !?.,'~*<3", text[i]) != nullptr;
+    if (ok) { text[n] = 0; ok = allRealWords(text); }
   }
   if (!ok) {
     LineSet f = fallbackFor(mood);
