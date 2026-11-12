@@ -18,11 +18,11 @@ sys.path.insert(0, os.path.dirname(__file__))
 import pip_world as W  # noqa: E402
 
 SEED = 7
-HIDDEN = 96  # neurons per hidden layer (was 48)
+HIDDEN = 160  # neurons per hidden layer (was 96, before that 48)
 ENVS = 128
 ROLLOUT = 256
 UPDATES = int(os.environ.get("PIP_UPDATES", "1500"))            # training from scratch
-CONTINUE_UPDATES = int(os.environ.get("PIP_CONTINUE_UPDATES", "400"))  # nightly top-up from the last version
+CONTINUE_UPDATES = int(os.environ.get("PIP_CONTINUE_UPDATES", "600"))  # nightly top-up from the last version
 CONTINUE_LR = 1.5e-4
 GAMMA, LAM = 0.99, 0.95
 CLIP, ENT_COEF, VF_COEF, LR = 0.2, 0.005, 0.5, 3e-4

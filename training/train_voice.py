@@ -19,9 +19,9 @@ sys.path.insert(0, os.path.dirname(__file__))
 import speech_corpus as SC  # noqa: E402
 
 SEED = 11
-HIDDEN = 128  # memory cells (was 96)
+HIDDEN = 160  # memory cells (was 128, before that 96)
 STEPS = int(os.environ.get("PIP_VOICE_STEPS", "5000"))                 # from scratch
-CONTINUE_STEPS = int(os.environ.get("PIP_VOICE_CONTINUE_STEPS", "1200"))  # nightly top-up
+CONTINUE_STEPS = int(os.environ.get("PIP_VOICE_CONTINUE_STEPS", "2000"))  # nightly top-up
 CONTINUE_LR = 1e-3
 BATCH, SEQ, LR = 128, 96, 3e-3
 
@@ -245,8 +245,14 @@ if __name__ == "__main__":
     os.makedirs(OUT, exist_ok=True)
     update_status(state="starting")
     ck = load_checkpoint()
+    prev_gen = 0
+    if not ck and os.path.exists(CKPT_IN):
+        try:
+            prev_gen = int(torch.load(CKPT_IN, map_location="cpu").get("gen", 0))
+        except Exception:
+            pass
     model = train(ck)
-    gen = (ck["gen"] + 1) if ck else 1
+    gen = (ck["gen"] + 1) if ck else prev_gen + 1
     new_loss = test_loss(model)
     kept = "new"
     if ck:

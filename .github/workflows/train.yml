@@ -2,11 +2,11 @@ name: Train Pip brain
 
 # Trains Pip's neural network and its voice model on GitHub's computers (never on your Mac),
 # checks the C version matches, and saves the trained brain into PipAI/pip_brain.h.
-# Every 2 hours it picks up from the last saved version (the "checkpoints" release) and keeps
+# Every hour it picks up from the last saved version (the "checkpoints" release) and keeps
 # training; a new version only replaces the old one if it tests at least as well.
 on:
   schedule:
-    - cron: "0 */2 * * *"   # every 2 hours, on the hour
+    - cron: "0 * * * *"   # every hour, on the hour
   push:
     branches: [main]
     paths:
@@ -92,6 +92,7 @@ jobs:
       - name: Check the C brain + world match Python
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           gcc -O2 -I PipAI training/test_world.c -lm -o test_world
           set +e
@@ -160,14 +161,21 @@ jobs:
             PipAI/pip_brain.h
             PipAI/pip_voice.h
 
-      - name: Save checkpoints for tomorrow's training
+      - name: Save checkpoints for the next training run
         env:
           GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           gh release view checkpoints -R "${{ github.repository }}" >/dev/null 2>&1 || \
             gh release create checkpoints -R "${{ github.repository }}" --prerelease --title "Training checkpoints" \
               --notes "Saved brain and voice models so nightly training continues where it left off. Not for flashing."
-          gh release upload checkpoints -R "${{ github.repository }}" training/out/ckpt/brain.pt training/out/ckpt/voice.pt --clobber
+          # The trained models live here (not in the repo, which would grow by ~1.5 MB every hour).
+          # The build downloads pip_brain.h / pip_voice.h from this release.
+          gh release upload checkpoints -R "${{ github.repository }}" --clobber \
+            training/out/ckpt/brain.pt training/out/ckpt/voice.pt PipAI/pip_brain.h PipAI/pip_voice.h
+          # ...and a copy for the status website (status branch, which is always a single commit)
+          mkdir -p training/out/models && cp PipAI/pip_brain.h PipAI/pip_voice.h training/out/models/
+          bash training/push_status.sh
 
       - name: Archive this version (its own release, so it can be flashed or trained from later)
         env:
@@ -194,14 +202,14 @@ jobs:
             training/out/ckpt/brain.pt training/out/ckpt/voice.pt PipAI/pip_brain.h PipAI/pip_voice.h personality_report.md
           echo "Archived as $TAG"
 
-      - name: Save the trained brain to the repo
+      - name: Save the personality report to the repo (small; the models themselves live in releases)
         run: |
           cp training/out/report.md training/personality_report.md
           git config user.name "github-actions[bot]"
           git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
-          git add PipAI/pip_brain.h PipAI/pip_voice.h training/personality_report.md
+          git add training/personality_report.md
           git diff --cached --quiet && exit 0
-          git commit -m "Update Pip's trained brain [skip ci]"
+          git commit -m "Update Pip's personality report [skip ci]"
           # Other commits may have landed while training ran: rebase and retry.
           for i in 1 2 3 4 5; do
             git pull --rebase --autostash -X theirs origin main && git push && exit 0

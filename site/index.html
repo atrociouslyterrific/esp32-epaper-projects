@@ -278,7 +278,7 @@ h3 { font: 600 14px var(--f-body); margin: 16px 0 8px; }
     <h2 id="hist-h">Night by night</h2>
     <svg class="chart" id="hchart" viewBox="0 0 820 220" role="img" aria-label="Brain test score for each training run"></svg>
     <div class="scroll"><table class="hist-table" id="htable"><tbody><tr><td class="muted">The history starts with the next training run.</td></tr></tbody></table></div>
-    <p class="note">Every 2 hours GitHub continues training from the last version, then tests the new brain and voice against the old ones on the same test worlds and sentences. The new one is kept only if it does at least as well. Brain score: higher is better. Voice loss: lower is better.</p>
+    <p class="note">Every hour GitHub continues training from the last version, then tests the new brain and voice against the old ones on the same test worlds and sentences. The new one is kept only if it does at least as well. Brain score: higher is better. Voice loss: lower is better.</p>
   </section>
 
   <section aria-labelledby="mix-h">
@@ -960,8 +960,9 @@ async function loadBrain() {
   }
   if (brain && Date.now() - headerFetchedAt < 300000) return;
   try {
-    const r = await fetch(`https://raw.githubusercontent.com/${REPO}/main/PipAI/pip_brain.h?t=${Date.now()}`, { cache: "no-store" });
-    if (r.ok) { const b = parseHeader(await r.text()); if (b) { brain = b; brainSource = "The brain currently built into PipAI.bin (PipAI/pip_brain.h)"; headerFetchedAt = Date.now(); } }
+    let r = await fetch(`https://raw.githubusercontent.com/${REPO}/status/models/pip_brain.h`, { cache: "no-store" });
+    if (!r.ok) r = await fetch(`https://raw.githubusercontent.com/${REPO}/main/PipAI/pip_brain.h`, { cache: "no-store" });  // older runs kept it in the repo
+    if (r.ok) { const b = parseHeader(await r.text()); if (b) { brain = b; brainSource = "The newest trained brain (pip_brain.h)"; headerFetchedAt = Date.now(); } }
   } catch (e) { /* keep what we have */ }
 }
 
@@ -1094,7 +1095,8 @@ function parseVoice(text) {
 async function loadVoice() {
   if (voice && Date.now() - voiceFetchedAt < 300000) return;
   try {
-    const r = await fetch(`https://raw.githubusercontent.com/${REPO}/main/PipAI/pip_voice.h?t=${Date.now()}`, { cache: "no-store" });
+    let r = await fetch(`https://raw.githubusercontent.com/${REPO}/status/models/pip_voice.h`, { cache: "no-store" });
+    if (!r.ok) r = await fetch(`https://raw.githubusercontent.com/${REPO}/main/PipAI/pip_voice.h`, { cache: "no-store" });  // older runs kept it in the repo
     if (r.ok) { const v = parseVoice(await r.text()); if (v) { voice = v; voiceFetchedAt = Date.now(); } }
   } catch (e) { /* try again next time */ }
 }
@@ -1206,7 +1208,7 @@ function renderVoiceWeights() {
   const { H, V, vocab, Wih, Whh, bih, bhh, Wo, bo } = voice;
   const all = [...Wih, ...Whh, ...bih, ...bhh, ...Wo, ...bo];
   let absMax = 0, sum = 0; for (const x of all) { absMax = Math.max(absMax, Math.abs(x)); sum += x; }
-  $("vmeta").textContent = `The voice built into PipAI.bin (PipAI/pip_voice.h) · ${all.length.toLocaleString()} numbers · ${V} characters it knows · ${H} memory cells · largest ${absMax.toFixed(2)} · average ${(sum / all.length >= 0 ? "+" : "") + (sum / all.length).toFixed(3)}`;
+  $("vmeta").textContent = `The newest trained voice (pip_voice.h) · ${all.length.toLocaleString()} numbers · ${V} characters it knows · ${H} memory cells · largest ${absMax.toFixed(2)} · average ${(sum / all.length >= 0 ? "+" : "") + (sum / all.length).toFixed(3)}`;
   const labels = vocab.map(c => c === "\n" ? "end" : c === " " ? "space" : c === ">" ? ">" : /[A-Z]/.test(c) ? `mood ${c}` : c);
   const rows = (flat, n, m, transpose) => transpose
     ? Array.from({ length: m }, (_, i) => Array.from({ length: n }, (_, j) => flat[j * m + i]))

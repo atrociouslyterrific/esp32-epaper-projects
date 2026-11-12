@@ -42,6 +42,15 @@ jobs:
         with:
           ref: ${{ github.event_name == 'workflow_run' && 'main' || '' }}
 
+      - name: Get the newest trained brain and voice
+        if: matrix.sketch == 'PipAI'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download checkpoints -R "${{ github.repository }}" -p pip_brain.h -p pip_voice.h -D PipAI --clobber \
+            && echo "Using the models from the checkpoints release" \
+            || echo "No models in the checkpoints release yet - using the repo's copies"
+
       - name: Check the sketch is ready
         id: ready
         run: |
