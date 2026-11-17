@@ -4,8 +4,8 @@ Each row is one personality living 3 simulated days in the same kinds of rooms. 
 
 | Personality | idle | nap | eat | explore | play | sing | hide | warm_up | cool_down | call | dance | window |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
-| Curious explorer | 0 | 28 | 8 | 23 | 0 | 13 | 0 | 4 | 10 | 10 | 0 | 4 |
-| Playful goofball | 0 | 29 | 7 | 0 | 23 | 12 | 0 | 3 | 10 | 15 | 0 | 0 |
-| Lazy napper | 0 | 33 | 7 | 0 | 4 | 20 | 1 | 5 | 13 | 6 | 12 | 0 |
-| Shy scaredy-cat | 0 | 27 | 7 | 2 | 7 | 19 | 17 | 4 | 11 | 6 | 1 | 0 |
-| Cuddly sweetheart | 0 | 26 | 7 | 0 | 7 | 24 | 0 | 3 | 8 | 25 | 0 | 0 |
+| Curious explorer | 0 | 29 | 8 | 27 | 0 | 13 | 0 | 4 | 10 | 7 | 0 | 1 |
+| Playful goofball | 0 | 31 | 7 | 0 | 25 | 16 | 0 | 4 | 9 | 8 | 0 | 0 |
+| Lazy napper | 0 | 33 | 7 | 0 | 4 | 19 | 1 | 6 | 11 | 7 | 13 | 0 |
+| Shy scaredy-cat | 0 | 26 | 7 | 1 | 8 | 18 | 18 | 5 | 10 | 7 | 1 | 0 |
+| Cuddly sweetheart | 0 | 26 | 7 | 0 | 7 | 27 | 0 | 3 | 7 | 23 | 0 | 0 |
